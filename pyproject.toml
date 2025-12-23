@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=1.5",
     "matplotlib>=3.5",
     "astropy>=5.0",
+    "sbpy>=0.4",
     "emcee>=3.1",
     "corner>=2.2",
     "specutils>=1.9",

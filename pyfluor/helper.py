@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import re
 import io
+import math
+
 
 from pathlib import Path
 from typing import Dict, Any, Optional, Literal, Union
@@ -28,7 +30,155 @@ from specutils.utils.wcs_utils import air_to_vac
 PACKAGE_DIR = Path(__file__).resolve().parent
 DATA_DIR = PACKAGE_DIR / "data"
 
+# Slit-loss / seeing helpers (Gaussian PSF)
+# ---------------------------------------------------------------------
+def make_fwhm_lambda_bounds(
+    eps_min_arcsec_500: float,
+    eps_max_arcsec_500: float,
+    zmin_deg: float,
+    zmax_deg: float,
+    lambda0_nm: float = 500.0,
+    alpha: float = -1 / 5,
+    k: float = 0.6,
+):
+    def secz(z_deg):
+        z = np.deg2rad(z_deg)
+        c = np.cos(z)
+        if np.any(c <= 0):
+            raise ValueError("Zenith angles must be < 90° (cos(Z) > 0).")
+        return 1.0 / c
 
+    sec_min = secz(zmin_deg)
+    sec_max = secz(zmax_deg)
+
+    def eps_zenith_from_500(lambda_nm, eps500):
+        lam = np.asarray(lambda_nm, dtype=float)
+        return eps500 * (lam / lambda0_nm) ** alpha
+
+    def fwhm_min(lambda_nm):
+        eps_z = eps_zenith_from_500(lambda_nm, eps_min_arcsec_500)
+        return eps_z * (sec_min**k)
+
+    def fwhm_max(lambda_nm):
+        eps_z = eps_zenith_from_500(lambda_nm, eps_max_arcsec_500)
+        return eps_z * (sec_max**k)
+
+    return fwhm_min, fwhm_max
+
+
+def frac_in_circular_aperture_gaussian(fwhm_arcsec, radius_arcsec):
+    """
+    Fraction inside circular aperture radius R for 2D Gaussian:
+        f = 1 - exp(-R^2/(2 sigma^2)),  sigma = FWHM/(2*sqrt(2 ln2))
+    """
+    fwhm = np.asarray(fwhm_arcsec, dtype=float)
+    R = float(radius_arcsec)
+    sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    return 1.0 - np.exp(-(R * R) / (2.0 * sigma * sigma))
+
+
+def frac_in_rectangular_aperture_gaussian(fwhm_arcsec, width_arcsec, length_arcsec):
+    """
+    Fraction inside axis-aligned rectangle (width x length) for circular 2D Gaussian:
+        f = erf(w/(2*sqrt(2)*sigma)) * erf(l/(2*sqrt(2)*sigma))
+    """
+    fwhm = np.asarray(fwhm_arcsec, dtype=float)
+    w = float(width_arcsec)
+    l = float(length_arcsec)
+    sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    a = w / (2.0 * np.sqrt(2.0) * sigma)
+    b = l / (2.0 * np.sqrt(2.0) * sigma)
+    erf = np.vectorize(math.erf)
+    return erf(a) * erf(b)
+
+
+def throughput_vs_lambda(
+    lambda_min_nm: float,
+    lambda_max_nm: float,
+    eps_min_arcsec_500: float,
+    eps_max_arcsec_500: float,
+    zmin_deg: float,
+    zmax_deg: float,
+    n_points: int,
+    aperture: dict,
+):
+    if n_points < 2:
+        raise ValueError("n_points must be >= 2")
+
+    lam = np.linspace(lambda_min_nm, lambda_max_nm, n_points)
+
+    fmin_fun, fmax_fun = make_fwhm_lambda_bounds(
+        eps_min_arcsec_500=eps_min_arcsec_500,
+        eps_max_arcsec_500=eps_max_arcsec_500,
+        zmin_deg=zmin_deg,
+        zmax_deg=zmax_deg,
+    )
+
+    fwhm_min = fmin_fun(lam)
+    fwhm_max = fmax_fun(lam)
+
+    ap_type = aperture.get("type", "").lower().strip()
+    if ap_type == "circular":
+        R = float(aperture["radius_arcsec"])
+        frac_min = frac_in_circular_aperture_gaussian(fwhm_min, R)
+        frac_max = frac_in_circular_aperture_gaussian(fwhm_max, R)
+    elif ap_type == "rectangular":
+        w = float(aperture["width_arcsec"])
+        l = float(aperture["length_arcsec"])
+        frac_min = frac_in_rectangular_aperture_gaussian(fwhm_min, w, l)
+        frac_max = frac_in_rectangular_aperture_gaussian(fwhm_max, w, l)
+    else:
+        raise ValueError("aperture['type'] must be 'circular' or 'rectangular'")
+
+    loss_min = 1.0 - frac_min
+    loss_max = 1.0 - frac_max
+
+    return {
+        "lambda_nm": lam,
+        "fwhm_min_arcsec": fwhm_min,
+        "fwhm_max_arcsec": fwhm_max,
+        "frac_min": frac_min,
+        "frac_max": frac_max,
+        "loss_min": loss_min,
+        "loss_max": loss_max,
+    }
+
+
+def add_slit_loss_error_scalar(
+    q_log10: float,
+    q_err: float,
+    *,
+    lambda_nm: float,
+    aperture: dict,
+    eps_min_arcsec_500: float = 0.7,
+    eps_max_arcsec_500: float = 1.2,
+    zmin_deg: float = 45.0,
+    zmax_deg: float = 45.0,
+    n_points: int = 2000,
+):
+    out = throughput_vs_lambda(
+        lambda_nm - 0.01,
+        lambda_nm + 0.01,
+        eps_min_arcsec_500=eps_min_arcsec_500,
+        eps_max_arcsec_500=eps_max_arcsec_500,
+        zmin_deg=zmin_deg,
+        zmax_deg=zmax_deg,
+        n_points=n_points,
+        aperture=aperture,
+    )
+    f_min = float(np.mean(out["frac_min"]))
+    f_max = float(np.mean(out["frac_max"]))
+
+    # same scaling logic you used
+    s_min = np.sqrt(f_min * f_max) / f_max
+    s_max = np.sqrt(f_min * f_max) / f_min
+
+    q_low = q_log10 + np.log10(s_min)
+    q_high = q_log10 + np.log10(s_max)
+    sys_sym = float(np.mean([abs(q_log10 - q_low), abs(q_high - q_log10)]))
+
+    err = float(np.sqrt(q_err**2 + sys_sym**2))
+    return err
 
 def open_table(
     file_path: os.PathLike | str,

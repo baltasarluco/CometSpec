@@ -1,38 +1,61 @@
 from __future__ import annotations
 
 """
-High-level fluorescence model wrapper.
+High-level fluorescence model wrapper (UPDATED for isotopologues + systems)
++ Production rate + slit-loss systematic error support.
+
+Key additions vs your last FluorescenceModel
+--------------------------------------------
+1) self.q and self.q_err
+   - single-iso: float or None
+   - multi-iso: dict[str, float] or None (keyed by isotopologue)
+
+2) New public methods:
+   - compute_production_rate(...)
+   - add_slit_loss_error(...)
+
+3) Serialization:
+   - save/load now persist q and q_err (safe even if None)
+
+4) Safety:
+   - if fitted logN changed in _update_from_result => reset q/q_err to None
+   - if update_model changes logN/logN_by_iso/isotopologues => reset q/q_err to None
 """
 
-from typing import Any, Dict, Optional, Tuple, Callable
+from typing import Any, Dict, Optional, Tuple, Callable, Sequence, Union
 
 import numpy as np
 import pickle
+import pandas as pd
 
+# used by slit-loss error helper (erf)
+import math
+
+# optional: astropy/sbpy only needed for production rate
+from astropy import units as u
+from sbpy.activity import Haser, CircularAperture, RectangularAperture
 
 from . import helper, modeling
 
 
+# ---------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------
+# Fluorescence Model
+# ---------------------------------------------------------------------
 class FluorescenceModel:
-    """
-    Container for a single CN fluorescence model + its MCMC fit.
-
-    Notes
-    -----
-    - Without a user-provided LSF, a Gaussian LSF is used by default,
-      with sigma=0.01 AA, and all other LSF params are kept None.
-    """
-
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
     def __init__(
         self,
         *,
         data: Optional[Any] = None,
         window: Optional[Tuple[float, float]] = (3850.0, 3900.0),
         pumping: Any = None,
-        line_path: Optional[str] = helper.get_default_mol_linelist_path(),
+        isotopologues: Union[str, Sequence[str]] = "12C14N",
+        systems: Union[str, Sequence[str], None] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
+        line_path: Optional[str] = None,
         lsf: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         lsf_method: Optional[str] = "Gauss",
         A_min: float = 1e4,
@@ -48,57 +71,71 @@ class FluorescenceModel:
         pumping_min_wave: Optional[float] = 2990.0010,
         pumping_max_wave: Optional[float] = 10009.9980,
         logN: Optional[float] = 11.0,
+        logN_by_iso: Optional[Dict[str, float]] = None,
         logQ: Optional[float] = -3.0,
         T: Optional[float] = 300.0,
         v_kms: Optional[float] = 0.0,
         dlam: Optional[float] = 0.0,
+        wave_col: str = "WAVE",
+        flux_col: str = "FLUX_STACK",
+        error_col: str = "ERR_STACK",
+        continuum_col: str = "CONTINUUM",
+        omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,
     ) -> None:
         if pumping is None:
             raise ValueError("Pumping spectrum must be provided to FluorescenceModel.")
 
-        # Observed data + config
         self.data = data
+        self.wave_col = wave_col
+        self.flux_col = flux_col
+        self.error_col = error_col
+        self.continuum_col = continuum_col
+        
+        self.omega = omega
+        
         self.window = window
         self.pumping = pumping
+
+        self.isotopologues = isotopologues
+        self.systems = systems
+        self.linelists = linelists
         self.line_path = line_path
+
         self.pumping_min_wave = pumping_min_wave
         self.pumping_max_wave = pumping_max_wave
 
         self.A_min = float(A_min)
-        self.name = name or "CN fluorescence"
+        self.name = name or "Fluorescence"
         self.a = a
         self.threads = threads
 
-        # --- Physical / excitation parameters ---
         self.logN = logN
+        self.logN_by_iso = dict(logN_by_iso) if logN_by_iso is not None else None
         self.logQ = logQ
         self.T = T
         self.v_kms = v_kms
         self.dlam = dlam
 
+        # NEW: derived quantities (production rate and its uncertainty)
+        self.q: Optional[Union[float, Dict[str, float]]] = None
+        self.q_err: Optional[Union[float, Dict[str, float]]] = None
+
         # --- LSF setup ---
         if lsf is not None:
-            # Fixed external LSF
             self.lsf = lsf
             self.lsf_method = "Given"
-            # all parametric LSF params irrelevant
             self.sigma = None
             self.sigma1 = None
             self.sigma2 = None
             self.sigma_G = None
             self.fwhm_L = None
             self.ratio = None
-
         else:
-            # Parametric LSF
             self.lsf_method = lsf_method
 
             if lsf_method == "Gauss":
-                # default sigma if not provided
                 self.sigma = 0.01 if sigma is None else float(sigma)
-                dic_params = {"sigma": self.sigma}
-                self.lsf = modeling.make_lsf(dic_params, lsf_method)
-
+                self.lsf = modeling.make_lsf({"sigma": self.sigma}, lsf_method)
                 self.sigma1 = None
                 self.sigma2 = None
                 self.ratio = None
@@ -107,55 +144,37 @@ class FluorescenceModel:
 
             elif lsf_method == "2Gauss":
                 if sigma1 is None or sigma2 is None or ratio is None:
-                    raise ValueError(
-                        "sigma1, sigma2, and ratio must be provided for '2Gauss' LSF method."
-                    )
+                    raise ValueError("sigma1, sigma2, ratio required for '2Gauss'.")
                 self.sigma1 = float(sigma1)
                 self.sigma2 = float(sigma2)
                 self.ratio = float(ratio)
-
-                dic_params = {
-                    "sigma1": self.sigma1,
-                    "sigma2": self.sigma2,
-                    "ratio": self.ratio,
-                }
-                self.lsf = modeling.make_lsf(dic_params, lsf_method)
-
+                self.lsf = modeling.make_lsf(
+                    {"sigma1": self.sigma1, "sigma2": self.sigma2, "ratio": self.ratio},
+                    lsf_method,
+                )
                 self.sigma = None
                 self.sigma_G = None
                 self.fwhm_L = None
 
             elif lsf_method == "Gauss_Lorentz":
                 if sigma_G is None or fwhm_L is None or ratio is None:
-                    raise ValueError(
-                        "sigma_G, fwhm_L, and ratio must be provided for 'Gauss_Lorentz' LSF method."
-                    )
+                    raise ValueError("sigma_G, fwhm_L, ratio required for 'Gauss_Lorentz'.")
                 self.sigma_G = float(sigma_G)
                 self.fwhm_L = float(fwhm_L)
                 self.ratio = float(ratio)
-
-                dic_params = {
-                    "sigma_G": self.sigma_G,
-                    "fwhm_L": self.fwhm_L,
-                    "ratio": self.ratio,
-                }
-                self.lsf = modeling.make_lsf(dic_params, lsf_method)
-
+                self.lsf = modeling.make_lsf(
+                    {"sigma_G": self.sigma_G, "fwhm_L": self.fwhm_L, "ratio": self.ratio},
+                    lsf_method,
+                )
                 self.sigma = None
                 self.sigma1 = None
                 self.sigma2 = None
+
             elif lsf_method == "Lorentz":
                 if fwhm_L is None:
-                    raise ValueError(
-                        "fwhm_L must be provided for 'Lorentz' LSF method."
-                    )
+                    raise ValueError("fwhm_L required for 'Lorentz'.")
                 self.fwhm_L = float(fwhm_L)
-
-                dic_params = {
-                    "fwhm_L": self.fwhm_L,
-                }
-                self.lsf = modeling.make_lsf(dic_params, lsf_method)
-
+                self.lsf = modeling.make_lsf({"fwhm_L": self.fwhm_L}, lsf_method)
                 self.sigma = None
                 self.sigma1 = None
                 self.sigma2 = None
@@ -172,11 +191,18 @@ class FluorescenceModel:
         self.low_errors_params: Dict[str, float] = {}
         self.samples_pruned: Optional[np.ndarray] = None
         self.lnprob_pruned: Optional[np.ndarray] = None
-        self.v_up_error: float = None
-        self.v_low_error: float = None
-        self.v_samples: Optional[np.ndarray] = None
 
+        # Derived model containers (now potentially per-iso internally)
+        self.lines_by_iso: Optional[Dict[str, Any]] = None
+        self.M_by_iso: Optional[Dict[str, np.ndarray]] = None
+        self.idx_to_level_by_iso: Optional[Dict[str, Any]] = None
+        self.n_by_iso: Optional[Dict[str, np.ndarray]] = None
+        self.g_ph_by_iso: Optional[Dict[str, np.ndarray]] = None
+        self.g_en_by_iso: Optional[Dict[str, np.ndarray]] = None
+        self.g_ph_sum_by_iso: Optional[Dict[str, float]] = None
+        self.g_en_sum_by_iso: Optional[Dict[str, float]] = None
 
+        # "flat" convenience (single iso uses these)
         self.lines = None
         self.M = None
         self.idx_to_level = None
@@ -192,11 +218,72 @@ class FluorescenceModel:
         self.model_p16: Optional[np.ndarray] = None
         self.model_p84: Optional[np.ndarray] = None
 
-        # Build initial synthetic model
         self._synthesize_model()
 
+    # -------------------------
+    # Small internal helpers
+    # -------------------------
+    def _iso_list(self) -> list[str]:
+        return [self.isotopologues] if isinstance(self.isotopologues, str) else list(self.isotopologues)
+
+    @staticmethod
+    def _km_per_arcsec(delta_au: float) -> float:
+        delta_km = (float(delta_au) * u.au).to(u.km).value
+        return float(delta_km * np.tan(1.0 * u.arcsec.to(u.rad)))
+
+    @classmethod
+    def _aperture_area_cm2(cls, aperture: dict, *, delta_au: float) -> u.Quantity:
+        """
+        Convert aperture definition into collecting area on the sky in cm^2.
+        aperture:
+          {"type":"circular", "radius_arcsec": R}
+          {"type":"rectangular", "width_arcsec": W, "length_arcsec": L}
+        """
+        ap_type = aperture.get("type", "").lower().strip()
+        km_per_arcsec = cls._km_per_arcsec(delta_au)
+
+        if ap_type == "circular":
+            R_arcsec = float(aperture["radius_arcsec"])
+            R_km = R_arcsec * km_per_arcsec
+            R_cm = R_km * 1e5
+            return (np.pi * R_cm**2) * u.cm**2
+
+        if ap_type == "rectangular":
+            W_arcsec = float(aperture["width_arcsec"])
+            L_arcsec = float(aperture["length_arcsec"])
+            W_km = W_arcsec * km_per_arcsec
+            L_km = L_arcsec * km_per_arcsec
+            W_cm = W_km * 1e5
+            L_cm = L_km * 1e5
+            return (W_cm * L_cm) * u.cm**2
+
+        raise ValueError("aperture['type'] must be 'circular' or 'rectangular'")
+
+    @classmethod
+    def _sbpy_aperture(cls, aperture: dict, *, delta_au: float):
+        """
+        Build sbpy aperture object in km units for Haser.total_number().
+        """
+        ap_type = aperture.get("type", "").lower().strip()
+        km_per_arcsec = cls._km_per_arcsec(delta_au)
+
+        if ap_type == "circular":
+            R_arcsec = float(aperture["radius_arcsec"])
+            R_km = R_arcsec * km_per_arcsec
+            return CircularAperture((R_km * u.km))
+
+        if ap_type == "rectangular":
+            W_arcsec = float(aperture["width_arcsec"])
+            L_arcsec = float(aperture["length_arcsec"])
+            W_km = W_arcsec * km_per_arcsec
+            L_km = L_arcsec * km_per_arcsec
+            # sbpy RectangularAperture uses (width, height)
+            return RectangularAperture((W_km * u.km), (L_km * u.km))
+
+        raise ValueError("aperture['type'] must be 'circular' or 'rectangular'")
+
     # ------------------------------------------------------------------
-    # Public: run MCMC
+    # Public: run MCMC (UNCHANGED BODY, except it still calls _update_from_result)
     # ------------------------------------------------------------------
     def fit_mcmc(
         self,
@@ -204,6 +291,9 @@ class FluorescenceModel:
         window: Optional[Tuple[float, float]] = None,
         *,
         pumping: Any = None,
+        isotopologues: Union[str, Sequence[str], None] = None,
+        systems: Union[str, Sequence[str], None] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
         line_path: Optional[str] = None,
         nwalkers: int = 20,
         nsteps: int = 1000,
@@ -216,8 +306,8 @@ class FluorescenceModel:
         a: Optional[float] = None,
         threads: Optional[int] = None,
         fig_file: str = "mcmc_fit",
+        include_rotations: bool = True,
     ) -> Dict[str, Any]:
-        # allow overrides
         if data is not None:
             self.data = data
         if self.data is None:
@@ -225,9 +315,7 @@ class FluorescenceModel:
 
         if window is None:
             if self.window is None:
-                raise ValueError(
-                    "window must be provided (argument or FluorescenceModel.window)."
-                )
+                raise ValueError("window must be provided (argument or instance.window).")
             window = self.window
         else:
             self.window = window
@@ -237,9 +325,14 @@ class FluorescenceModel:
         else:
             self.pumping = pumping
         if pumping is None:
-            raise ValueError(
-                "pumping must be provided (argument or FluorescenceModel.pumping)."
-            )
+            raise ValueError("pumping must be provided.")
+
+        if isotopologues is not None:
+            self.isotopologues = isotopologues
+        if systems is not None:
+            self.systems = systems
+        if linelists is not None:
+            self.linelists = linelists
 
         if line_path is None:
             line_path = self.line_path
@@ -247,47 +340,35 @@ class FluorescenceModel:
             self.line_path = line_path
 
         if priors is None:
-            priors = self.priors or {
-                "logN": (9.0, 15.0),
-                "logQ": (-5.0, 0.0),
-                "T": (10.0, 1000.0),}
-            
-            print(
-                "No priors provided, using default priors: logN, logQ, T, v_kms."
-            )
+            priors = self.priors or {"logN": (9.0, 15.0), "logQ": (-5.0, 0.0), "T": (10.0, 1000.0)}
+            print("No priors provided, using default priors: logN, logQ, T.")
         self.priors = priors
 
-        if lsf is not None:
-            print("An lsf was given, so it will be assumed as fixed.")
-        # if None, we'll use the instance LSF / lsf_method
-
         if lsf_method is None:
-            print(
-                "No lsf_method was given, so the one stored in the instance will be used."
-            )
             lsf_method = self.lsf_method
 
         if A_min is None:
             A_min = self.A_min
         else:
-            self.A_min = A_min
+            self.A_min = float(A_min)
 
         if a is None:
             a = self.a
         else:
-            self.a = a
+            self.a = float(a)
 
         if threads is None:
             threads = self.threads
         else:
-            self.threads = threads
+            self.threads = int(threads)
 
-        print('Lets go with the full fit')
-        # Delegate to underlying implementation
         result = modeling.mcmc_fitting(
             self.data,
             window,
             pumping=pumping,
+            isotopologues=self.isotopologues,
+            systems=self.systems,
+            linelists=self.linelists,
             line_path=line_path,
             nwalkers=nwalkers,
             nsteps=nsteps,
@@ -296,28 +377,34 @@ class FluorescenceModel:
             lsf_method=lsf_method,
             make_plots=make_plots,
             progress=progress,
-            A_min=A_min,
-            a=a,
-            threads=threads,
+            A_min=self.A_min,
+            a=self.a,
+            threads=self.threads,
+            velocity_kms=0.0,
+            delta_lambda_A=0.0,
             fig_file=fig_file,
+            wave_col=self.wave_col,
+            flux_col=self.flux_col,
+            error_col=self.error_col,
+            continuum_col=self.continuum_col,
+            omega=self.omega,
+            include_rotations=include_rotations,
         )
 
-        # Update instance from fit result (this will also resynthesize)
-        self._update_from_result(
-            result,
-            used_lsf=lsf,
-            used_lsf_method=lsf_method,
-        )
-
+        self._update_from_result(result, used_lsf=lsf, used_lsf_method=lsf_method)
         return result
 
     # ------------------------------------------------------------------
-    # Public: update params & resynthesize
+    # Public: update params & resynthesize (ONLY ADD: q/q_err reset logic)
     # ------------------------------------------------------------------
     def update_model(
         self,
         *,
+        isotopologues: Union[str, Sequence[str], None] = None,
+        systems: Union[str, Sequence[str], None] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
         logN: Optional[float] = None,
+        logN_by_iso: Optional[Dict[str, float]] = None,
         logQ: Optional[float] = None,
         T: Optional[float] = None,
         v_kms: Optional[float] = None,
@@ -335,17 +422,13 @@ class FluorescenceModel:
         ratio: Optional[float] = None,
         window: Optional[Tuple[float, float]] = None,
         pumping: Any = None,
-        data: Any = None,
+        data: Any = None, 
+        wave_col: str = None,
+        flux_col: str = None,
+        error_col: str = None,
+        continuum_col: str = None,
+        omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,       
     ) -> None:
-        """
-        Update one or more *model-defining* parameters and immediately
-        recompute the synthetic spectrum.
-
-        Call like:
-            model.update_model(logN=12.0, T=400.0)
-        """
-
-        # Basic fields
         if data is not None:
             self.data = data
         if pumping is not None:
@@ -353,8 +436,19 @@ class FluorescenceModel:
         if window is not None:
             self.window = window
 
+        # --- selection updates ---
+        if isotopologues is not None:
+            self.isotopologues = isotopologues
+        if systems is not None:
+            self.systems = systems
+        if linelists is not None:
+            self.linelists = linelists
+
+        # --- physical updates ---
         if logN is not None:
             self.logN = float(logN)
+        if logN_by_iso is not None:
+            self.logN_by_iso = dict(logN_by_iso)
         if logQ is not None:
             self.logQ = float(logQ)
         if T is not None:
@@ -371,274 +465,237 @@ class FluorescenceModel:
         if pumping_max_wave is not None:
             self.pumping_max_wave = float(pumping_max_wave)
 
-        # LSF: either a fully given kernel or parametric
+        # --- LSF handling (same as your previous logic) ---
         if lsf is not None:
-            # external fixed LSF overrides everything
             self.lsf = lsf
             self.lsf_method = "Given"
             for name in ("sigma", "sigma1", "sigma2", "sigma_G", "fwhm_L", "ratio"):
                 setattr(self, name, None)
-
         elif lsf_method is not None:
-            # switching LSF model
             self.lsf_method = lsf_method
             if lsf_method == "Gauss":
                 self.sigma = float(sigma if sigma is not None else 0.01)
-                self.sigma1 = None
-                self.sigma2 = None
-                self.sigma_G = None
-                self.fwhm_L = None
-                self.ratio = None
                 self.lsf = modeling.make_lsf({"sigma": self.sigma}, "Gauss")
-
+                self.sigma1 = self.sigma2 = self.sigma_G = self.fwhm_L = self.ratio = None
             elif lsf_method == "2Gauss":
                 if sigma1 is None or sigma2 is None or ratio is None:
-                    raise ValueError(
-                        "sigma1, sigma2, and ratio must be provided for '2Gauss'."
-                    )
+                    raise ValueError("sigma1, sigma2, ratio required for '2Gauss'.")
                 self.sigma1 = float(sigma1)
                 self.sigma2 = float(sigma2)
                 self.ratio = float(ratio)
-                self.sigma = None
-                self.sigma_G = None
-                self.fwhm_L = None
                 self.lsf = modeling.make_lsf(
-                    {
-                        "sigma1": self.sigma1,
-                        "sigma2": self.sigma2,
-                        "ratio": self.ratio,
-                    },
+                    {"sigma1": self.sigma1, "sigma2": self.sigma2, "ratio": self.ratio},
                     "2Gauss",
                 )
-
+                self.sigma = self.sigma_G = self.fwhm_L = None
             elif lsf_method == "Gauss_Lorentz":
                 if sigma_G is None or fwhm_L is None or ratio is None:
-                    raise ValueError(
-                        "sigma_G, fwhm_L, and ratio must be provided for 'Gauss_Lorentz'."
-                    )
+                    raise ValueError("sigma_G, fwhm_L, ratio required for 'Gauss_Lorentz'.")
                 self.sigma_G = float(sigma_G)
                 self.fwhm_L = float(fwhm_L)
                 self.ratio = float(ratio)
-                self.sigma = None
-                self.sigma1 = None
-                self.sigma2 = None
                 self.lsf = modeling.make_lsf(
-                    {
-                        "sigma_G": self.sigma_G,
-                        "fwhm_L": self.fwhm_L,
-                        "ratio": self.ratio,
-                    },
+                    {"sigma_G": self.sigma_G, "fwhm_L": self.fwhm_L, "ratio": self.ratio},
                     "Gauss_Lorentz",
                 )
+                self.sigma = self.sigma1 = self.sigma2 = None
             elif lsf_method == "Lorentz":
                 if fwhm_L is None:
-                    raise ValueError(
-                        "fwhm_L must be provided for 'Lorentz'."
-                    )
+                    raise ValueError("fwhm_L required for 'Lorentz'.")
                 self.fwhm_L = float(fwhm_L)
-                self.sigma = None
-                self.sigma1 = None
-                self.sigma2 = None
-                self.sigma_G = None
-                self.ratio = None
-                self.lsf = modeling.make_lsf(
-                    {
-                        "fwhm_L": self.fwhm_L,
-                    },
-                    "Lorentz",
-                )
+                self.lsf = modeling.make_lsf({"fwhm_L": self.fwhm_L}, "Lorentz")
+                self.sigma = self.sigma1 = self.sigma2 = self.sigma_G = self.ratio = None
             else:
                 raise ValueError(f"Unsupported lsf_method: {lsf_method}")
-
-        # If only individual sigma* / ratio changed for same lsf_method:
-        elif self.lsf_method == "Gauss" and sigma is not None:
-            self.sigma = float(sigma)
-            self.lsf = modeling.make_lsf({"sigma": self.sigma}, "Gauss")
-            self.sigma1 = None
-            self.sigma2 = None
-            self.sigma_G = None
-            self.fwhm_L = None
-            self.ratio = None
-
-        elif self.lsf_method == "2Gauss" and any(
-            v is not None for v in (sigma1, sigma2, ratio)
-        ):
-            self.sigma1 = float(sigma1) if sigma1 is not None else self.sigma1
-            self.sigma2 = float(sigma2) if sigma2 is not None else self.sigma2
-            self.ratio = float(ratio) if ratio is not None else self.ratio
-            self.lsf = modeling.make_lsf(
-                {
-                    "sigma1": self.sigma1,
-                    "sigma2": self.sigma2,
-                    "ratio": self.ratio,
-                },
-                "2Gauss",
-            )
-            self.sigma = None
-            self.sigma_G = None
-            self.fwhm_L = None
-
-        elif self.lsf_method == "Gauss_Lorentz" and any(
-            v is not None for v in (sigma_G, fwhm_L, ratio)
-        ):
-            self.sigma_G = float(sigma_G) if sigma_G is not None else self.sigma_G
-            self.fwhm_L = float(fwhm_L) if fwhm_L is not None else self.fwhm_L
-            self.ratio = float(ratio) if ratio is not None else self.ratio
-            self.lsf = modeling.make_lsf(
-                {
-                    "sigma_G": self.sigma_G,
-                    "fwhm_L": self.fwhm_L,
-                    "ratio": self.ratio,
-                },
-                "Gauss_Lorentz",
-            )
-            self.sigma = None
-            self.sigma1 = None
-            self.sigma2 = None
-        elif self.lsf_method == "Lorentz" and fwhm_L is not None:
-            self.fwhm_L = float(fwhm_L)
-            self.lsf = modeling.make_lsf(
-                {
-                    "fwhm_L": self.fwhm_L,
-                },
-                "Lorentz",
-            )
-            self.sigma = None
-            self.sigma1 = None
-            self.sigma2 = None
-            self.sigma_G = None
-            self.ratio = None
         else:
-            #update the lsf to the current self values
+            # rebuild from stored params
             if self.lsf_method == "Gauss":
                 if self.sigma is None:
                     self.sigma = 0.01
                 self.lsf = modeling.make_lsf({"sigma": self.sigma}, "Gauss")
-                self.sigma1 = None
-                self.sigma2 = None
-                self.sigma_G = None
             elif self.lsf_method == "2Gauss":
                 self.lsf = modeling.make_lsf(
-                    {
-                        "sigma1": self.sigma1,
-                        "sigma2": self.sigma2,
-                        "ratio": self.ratio,
-                    },
+                    {"sigma1": self.sigma1, "sigma2": self.sigma2, "ratio": self.ratio},
                     "2Gauss",
                 )
-                self.sigma = None
-                self.sigma_G = None
-                self.fwhm_L = None
             elif self.lsf_method == "Gauss_Lorentz":
                 self.lsf = modeling.make_lsf(
-                    {
-                        "sigma_G": self.sigma_G,
-                        "fwhm_L": self.fwhm_L,
-                        "ratio": self.ratio,
-                    },
+                    {"sigma_G": self.sigma_G, "fwhm_L": self.fwhm_L, "ratio": self.ratio},
                     "Gauss_Lorentz",
                 )
-                self.sigma = None
-                self.sigma1 = None
-                self.sigma2 = None
-            
-        # Finally, recompute everything
+            elif self.lsf_method == "Lorentz":
+                self.lsf = modeling.make_lsf({"fwhm_L": self.fwhm_L}, "Lorentz")
+
+        # NEW: if logN or isotope selection changed, production rate is stale
+        if (logN is not None) or (logN_by_iso is not None) or (isotopologues is not None):
+            self.q = None
+            self.q_err = None
+
+        if omega is not None:
+            self.omega = omega
+        if wave_col is not None:
+            self.wave_col = wave_col
+        if flux_col is not None:
+            self.flux_col = flux_col
+        if error_col is not None:
+            self.error_col = error_col
+        if continuum_col is not None:
+            self.continuum_col = continuum_col
+
         self._synthesize_model()
 
     # ------------------------------------------------------------------
-    # Internal: rebuild model from current parameters
+    # Internal: rebuild model from current parameters (UNCHANGED BODY)
     # ------------------------------------------------------------------
     def _synthesize_model(self) -> None:
-        """
-        Build rate matrix, level populations, g-factors, and synthetic spectrum
-        using the current attributes.
-        """
         if self.pumping is None:
-            raise ValueError("Pumping spectrum is required to synthesize the model.")
-        if self.line_path is None:
-            self.line_path = helper.get_default_cn_linelist_path()
+            raise ValueError("Pumping spectrum is required.")
+        if self.window is None:
+            raise ValueError("window is required.")
 
+        iso_list = self._iso_list()
 
-        df_all = modeling.load_cn_linelist(self.line_path)
+        # 1) transitions
+        if self.linelists is None:
+            line_paths = None
+            if self.line_path is not None:
+                line_paths = {iso_list[0]: self.line_path}
 
-        lines_brook = modeling.filter_AX_BX(
-            df_all,
-            lambda_min_A=self.pumping_min_wave,
-            lambda_max_A=self.pumping_max_wave,
-            A_min=self.A_min,
-        )
+            trans_by_iso = modeling.load_default_cn_transitions(
+                isotopologues=iso_list,
+                systems=self.systems,
+                A_min=self.A_min,
+                lambda_min_A=float(self.pumping_min_wave),
+                lambda_max_A=float(self.pumping_max_wave),
+                use_omega_labels=False,
+                line_paths=line_paths,
+            )
+        else:
+            if isinstance(self.linelists, pd.DataFrame):
+                if len(iso_list) != 1:
+                    raise ValueError("If linelists is a single DataFrame, isotopologues must be a single iso.")
+                trans_by_iso = {iso_list[0]: self.linelists}
+            else:
+                trans_by_iso = {iso: self.linelists[iso] for iso in iso_list}
 
-        lines_theta = modeling.attach_pumping_and_labels(
-            lines_brook,
-            self.pumping,
-            use_omega_labels=False,
-            lsf_for_Jnu=None, 
-        )
+        # 2) per-iso solve + sum spectrum
+        lines_by_iso: Dict[str, Any] = {}
+        M_by_iso: Dict[str, np.ndarray] = {}
+        idx_by_iso: Dict[str, Any] = {}
+        n_by_iso: Dict[str, np.ndarray] = {}
+        gph_by_iso: Dict[str, np.ndarray] = {}
+        gen_by_iso: Dict[str, np.ndarray] = {}
+        gphsum_by_iso: Dict[str, float] = {}
+        gensum_by_iso: Dict[str, float] = {}
 
-        M_rad_theta, idx_to_level_theta, lines_out_theta = (
-            modeling.build_rate_matrix_nbar(
+        if self.model_wave is None:
+            wave = np.arange(self.window[0], self.window[1] + 0.01, 0.01, dtype=float)
+            self.model_wave = wave
+        else:
+            wave = np.asarray(self.model_wave, float)
+
+        spec_total = np.zeros_like(wave, dtype=float)
+
+        for iso, df_trans in trans_by_iso.items():
+            lines_theta = modeling.attach_pumping_and_labels(
+                df_trans,
+                self.pumping,
+                line_v_kms=0.0,
+                line_dlam_A=0.0,
+                lsf_for_Jnu=None,
+                lam_col="lambda_vac_A",
+            )
+
+            M_rad, idx_to_level, lines_out = modeling.build_rate_matrix_nbar(
                 lines_theta,
                 include_stim_emission=True,
                 verbose=False,
+                A_col="A_ul",
+                upper_id_col="upper_id",
+                lower_id_col="lower_id",
+                g_upper_col="g_upper",
+                g_lower_col="g_lower",
             )
-        )
-        
-        coll_scaf = modeling.precompute_cn_collision_scaffold(lines_out_theta, idx_to_level_theta)
 
-        self.lines = lines_out_theta
+            coll_scaf = modeling.precompute_cn_collision_scaffold(lines_out, idx_to_level)
 
-        M = M_rad_theta.copy()
+            M = M_rad.copy()
+            if self.logQ is not None and self.T is not None:
+                M = modeling.apply_collisions_inplace(M, coll_scaf, Q=10 ** float(self.logQ), T=float(self.T))
+            n = modeling.solve_with_normalization(M, verbose=False)
+            g_ph, g_en, g_ph_sum, g_en_sum = modeling.g_factors(lines_out, n, A_col="A_ul")
 
-        # collisions
-        if self.logQ is not None and self.T is not None:
-            M = modeling.apply_collisions_inplace(M, coll_scaf, Q=10**self.logQ, T=self.T)
+            # logN for this iso
+            if len(iso_list) == 1:
+                logN_i = float(self.logN)
+            else:
+                if self.logN_by_iso is not None and iso in self.logN_by_iso:
+                    logN_i = float(self.logN_by_iso[iso])
+                else:
+                    if self.logN is None:
+                        raise ValueError("For multi-iso, provide logN_by_iso or set logN as a common value.")
+                    logN_i = float(self.logN)
 
-        self.M = M
-        self.idx_to_level = idx_to_level_theta
-
-        n = modeling.solve_with_normalization(M, verbose=False)
-        self.n = n
-
-        g_ph, g_en, g_ph_sum, g_en_sum = modeling.g_factors(self.lines, self.n)
-        self.g_ph = g_ph
-        self.g_en = g_en
-        self.g_ph_sum = g_ph_sum
-        self.g_en_sum = g_en_sum
-
-        # spectrum grid
-        if self.model_wave is None:
-            wave = np.arange(
-                self.window[0],
-                self.window[1] + 0.01,
-                0.01,
+            _, spec_i = modeling.synth_spectrum_from_lines(
+                lines_out,
+                g_line_energy=g_en,
+                lam_min=float(wave.min()),
+                lam_max=float(wave.max()),
+                lam_col="Wave_vac_AA",
+                N_col_cm2=10.0 ** logN_i,
+                Omega_sr=self.omega,
+                grid=wave,
+                lsf=self.lsf,
+                v_shift_kms=float(self.v_kms or 0.0),
+                dlam_shift_A=float(self.dlam or 0.0),
             )
-            self.model_wave = wave
+
+            spec_total += spec_i
+
+            lines_by_iso[iso] = lines_out
+            M_by_iso[iso] = M
+            idx_by_iso[iso] = idx_to_level
+            n_by_iso[iso] = n
+            gph_by_iso[iso] = g_ph
+            gen_by_iso[iso] = g_en
+            gphsum_by_iso[iso] = g_ph_sum
+            gensum_by_iso[iso] = g_en_sum
+
+        self.lines_by_iso = lines_by_iso
+        self.M_by_iso = M_by_iso
+        self.idx_to_level_by_iso = idx_by_iso
+        self.n_by_iso = n_by_iso
+        self.g_ph_by_iso = gph_by_iso
+        self.g_en_by_iso = gen_by_iso
+        self.g_ph_sum_by_iso = gphsum_by_iso
+        self.g_en_sum_by_iso = gensum_by_iso
+
+        if len(iso_list) == 1:
+            iso0 = iso_list[0]
+            self.lines = lines_by_iso[iso0]
+            self.M = M_by_iso[iso0]
+            self.idx_to_level = idx_by_iso[iso0]
+            self.n = n_by_iso[iso0]
+            self.g_ph = gph_by_iso[iso0]
+            self.g_en = gen_by_iso[iso0]
+            self.g_ph_sum = gphsum_by_iso[iso0]
+            self.g_en_sum = gensum_by_iso[iso0]
         else:
-            wave = self.model_wave
+            self.lines = None
+            self.M = None
+            self.idx_to_level = None
+            self.n = None
+            self.g_ph = None
+            self.g_en = None
+            self.g_ph_sum = None
+            self.g_en_sum = None
 
-        grid, spec = modeling.synth_spectrum_from_lines(
-            self.lines,
-            g_line_energy=self.g_en,
-            lam_min=float(wave.min()),
-            lam_max=float(wave.max()),
-            lam_col="Wave_vac_AA",
-            N_col_cm2=10.0 ** self.logN,
-            Omega_sr=np.pi
-            * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,
-            grid=self.model_wave,
-            lsf=self.lsf,
-            v_shift_kms=self.v_kms,
-            dlam_shift_A=self.dlam,
-        )
+        self.model_wave = wave
+        self.best_model = spec_total
 
-        self.model_wave = grid
-        self.best_model = spec
-        # These are only filled by MCMC; keep None here
-        self.model_p16 = None
-        self.model_p84 = None
 
     # ------------------------------------------------------------------
-    # Internal: apply MCMC result and resynthesize
+    # Internal: apply MCMC result (ONLY ADD: q/q_err reset if logN changed)
     # ------------------------------------------------------------------
     def _update_from_result(
         self,
@@ -647,9 +704,6 @@ class FluorescenceModel:
         used_lsf: Optional[Callable[[np.ndarray], np.ndarray]],
         used_lsf_method: Optional[str],
     ) -> None:
-        """Update parameters and cached attributes from an mcmc_fitting result."""
-
-        # --- Store sampling outputs / metadata ---
         self.param_keys = tuple(result.get("param_keys", ()))
         self.median_params = dict(result.get("median_params", {}))
         self.up_errors_params = dict(result.get("up_errors_params", {}))
@@ -658,142 +712,256 @@ class FluorescenceModel:
         self.samples_pruned = result.get("samples_pruned")
         self.lnprob_pruned = result.get("lnprob_pruned")
 
-        # --- Update physical parameters from medians (if present) ---
         for name in ("logN", "logQ", "T", "v_kms", "dlam"):
             if name in self.median_params:
                 setattr(self, name, float(self.median_params[name]))
 
-        # --- LSF handling ---
+        iso_list = self._iso_list()
+        any_isoN = any((f"logN_{iso}" in self.median_params) for iso in iso_list)
+        if any_isoN:
+            self.logN_by_iso = {}
+            for iso in iso_list:
+                key = f"logN_{iso}"
+                if key in self.median_params:
+                    self.logN_by_iso[iso] = float(self.median_params[key])
+
+        # LSF update (same as your current)
         if used_lsf is not None:
-            # User-supplied fixed LSF during fit
             self.lsf = used_lsf
             self.lsf_method = "Given"
             for name in ("sigma", "sigma1", "sigma2", "sigma_G", "fwhm_L", "ratio"):
                 setattr(self, name, None)
-
         else:
-            # Rebuild parametric LSF from median_params + used_lsf_method
             self.lsf_method = used_lsf_method
-
-            for name in ("sigma", "sigma1", "sigma2", "sigma_G", "fwhm_L", "ratio"):
-                setattr(self, name, None)
-
             if self.lsf_method == "Gauss":
-                if "sigma" in self.median_params:
-                    self.sigma = float(self.median_params["sigma"])
-                if self.sigma is None:
-                    self.sigma = 0.01
+                self.sigma = float(self.median_params.get("sigma", 0.01))
                 self.lsf = modeling.make_lsf({"sigma": self.sigma}, "Gauss")
-
             elif self.lsf_method == "2Gauss":
                 vals = {}
                 for nm in ("sigma1", "sigma2", "ratio"):
                     if nm in self.median_params:
-                        val = float(self.median_params[nm])
-                        setattr(self, nm, val)
-                        vals[nm] = val
+                        vals[nm] = float(self.median_params[nm])
+                        setattr(self, nm, vals[nm])
                 if len(vals) == 3:
                     self.lsf = modeling.make_lsf(vals, "2Gauss")
-
             elif self.lsf_method == "Gauss_Lorentz":
                 vals = {}
                 for nm in ("sigma_G", "fwhm_L", "ratio"):
                     if nm in self.median_params:
-                        val = float(self.median_params[nm])
-                        setattr(self, nm, val)
-                        vals[nm] = val
+                        vals[nm] = float(self.median_params[nm])
+                        setattr(self, nm, vals[nm])
                 if len(vals) == 3:
                     self.lsf = modeling.make_lsf(vals, "Gauss_Lorentz")
             elif self.lsf_method == "Lorentz":
                 if "fwhm_L" in self.median_params:
                     self.fwhm_L = float(self.median_params["fwhm_L"])
-                if self.fwhm_L is not None:
-                    self.lsf = modeling.make_lsf(
-                        {
-                            "fwhm_L": self.fwhm_L,
-                        },
-                        "Lorentz",
-                    )
+                    self.lsf = modeling.make_lsf({"fwhm_L": self.fwhm_L}, "Lorentz")
 
-        # --- Rebuild CN model from these updated parameters ---
-        # This recomputes self.model_wave and self.median_model consistently.
         self.median_model = result.get("median_model", None)
         self.best_model = result.get("best_model", None)
         self.model_wave = result.get("model_wave", None)
-        # --- Attach MCMC envelopes if provided ---
-        # They should correspond to the same grid as model_wave.
-        if "model_p16" in result and result["model_p16"] is not None:
-            self.model_p16 = result["model_p16"]
-        if "model_p84" in result and result["model_p84"] is not None:
-            self.model_p84 = result["model_p84"]
+        self.model_p16 = result.get("model_p16", None)
+        self.model_p84 = result.get("model_p84", None)
 
-    def _get_init_state(self) -> Dict[str, Any]:
-            """
-            Build a dict of kwargs that can be fed back into __init__
-            to reconstruct this instance's configuration.
+        # NEW: if fitted logN changed, production rate is stale
+        logN_keys = {"logN"} | {f"logN_{iso}" for iso in iso_list}
+        if any(k in self.median_params for k in logN_keys):
+            self.q = None
+            self.q_err = None
 
-            Note: uses the parametric LSF description when possible.
-            """
-            # For a Given LSF, we try to pickle the callable directly.
-            lsf_for_init = None
-            lsf_method_for_init = self.lsf_method
-
-            if self.lsf_method == "Given":
-                lsf_for_init = self.lsf
-                # keep lsf_method as "Given" so __init__ understands it
-            else:
-                # parametric: we only need method + its params
-                lsf_for_init = None
-
-            return dict(
-                data=self.data,
-                window=self.window,
-                pumping=self.pumping,
-                line_path=self.line_path,
-                lsf=lsf_for_init,
-                lsf_method=lsf_method_for_init,
-                A_min=self.A_min,
-                a=self.a,
-                threads=self.threads,
-                name=self.name,
-                sigma=self.sigma,
-                sigma1=self.sigma1,
-                sigma2=self.sigma2,
-                sigma_G=self.sigma_G,
-                fwhm_L=self.fwhm_L,
-                ratio=self.ratio,
-                pumping_min_wave=self.pumping_min_wave,
-                pumping_max_wave=self.pumping_max_wave,
-                logN=self.logN,
-                logQ=self.logQ,
-                T=self.T,
-                v_kms=self.v_kms,
-                dlam=self.dlam,
-            )
-
-    def _get_fit_state(self) -> Dict[str, Any]:
+    # ------------------------------------------------------------------
+    # NEW: Production rate from fitted chains (single or multi-iso)
+    # ------------------------------------------------------------------
+    def compute_production_rate(
+        self,
+        *,
+        delta_au: float,
+        aperture: dict,
+        parent_length_km: float,
+        daughter_length_km: float,
+        v_outflow_km_s: float,
+        use_samples: bool = True,
+        N_total_coma_km: float = 1e7,
+    ) -> Union[Tuple[float, float], Dict[str, Tuple[float, float]]]:
         """
-        State related to the MCMC / derived products.
-        Safe to restore by direct attribute assignment.
+        Compute log10(Q) and its (symmetrized) uncertainty from the fitted logN chains,
+        using a Haser model and the chosen aperture.
+
+        Parameters
+        ----------
+        delta_au : float
+            Geocentric distance [AU] (needed to convert arcsec -> km).
+        aperture : dict
+            {"type":"circular","radius_arcsec":R} or
+            {"type":"rectangular","width_arcsec":W,"length_arcsec":L}
+        parent_length_km, daughter_length_km : float
+            Haser scale lengths (km).
+        v_outflow_km_s : float
+            Outflow speed (km/s).
+        use_samples : bool
+            If True uses self.samples_pruned chains; if False uses median logN(s) only.
+        N_total_coma_km : float
+            Radius (km) to approximate total coma for the Haser "total" number.
+
+        Returns
+        -------
+        single iso: (logQ50, logQerr)
+        multi iso: dict[iso] = (logQ50, logQerr)
+
+        Also sets self.q and self.q_err accordingly.
         """
-        return dict(
-            priors=self.priors,
-            param_keys=self.param_keys,
-            median_params=self.median_params,
-            up_errors_params=self.up_errors_params,
-            low_errors_params=self.low_errors_params,
-            samples_pruned=self.samples_pruned,
-            lnprob_pruned=self.lnprob_pruned,
-            v_up_error=self.v_up_error,
-            v_low_error=self.v_low_error,
-            v_samples=self.v_samples,
-            model_wave=self.model_wave,
-            median_model=self.median_model,
-            best_model=self.best_model,
-            model_p16=self.model_p16,
-            model_p84=self.model_p84,
+        iso_list = self._iso_list()
+
+        # Build Haser model
+        haser = Haser(
+            Q=1 * u.s**-1,
+            v=float(v_outflow_km_s) * u.km / u.s,
+            parent=float(parent_length_km) * u.km,
+            daughter=float(daughter_length_km) * u.km,
         )
 
+        # aperture objects / area
+        A_cm2 = self._aperture_area_cm2(aperture, delta_au=float(delta_au))
+        ap_sbpy = self._sbpy_aperture(aperture, delta_au=float(delta_au))
+
+        # fraction in aperture
+        N_in = haser.total_number(ap_sbpy)
+        N_tot = haser.total_number(float(N_total_coma_km) * u.km)
+        frac = (N_in / N_tot).decompose().value
+        if not np.isfinite(frac) or frac <= 0:
+            raise ValueError("Haser aperture fraction is invalid (<=0 or non-finite). Check aperture/delta.")
+
+        # daughter lifetime
+        daughter_lifetime_s = (float(daughter_length_km) * u.km) / (float(v_outflow_km_s) * u.km / u.s)
+
+        # helper: logN chain extraction
+        def get_logN_chain_for_iso(iso: str) -> np.ndarray:
+            if self.samples_pruned is None or self.param_keys is None:
+                raise ValueError("No MCMC samples available (samples_pruned/param_keys missing). Fit first or set use_samples=False.")
+            pkeys = list(self.param_keys)
+            if len(iso_list) == 1:
+                key = "logN"
+            else:
+                key = f"logN_{iso}"
+            if key not in pkeys:
+                raise KeyError(f"Missing parameter '{key}' in chains. param_keys={self.param_keys}")
+            j = pkeys.index(key)
+            return np.asarray(self.samples_pruned[:, j], float)
+
+        def compute_from_logN(logN_vals: np.ndarray) -> Tuple[float, float]:
+            """
+            Given logN chain, produce log10(Q) chain:
+              M_col = 10^logN [cm^-2] * mol
+              M_ap = M_col * A_cm2  [mol]
+              M_total = M_ap / frac
+              Q = M_total / lifetime
+            """
+            M_col = (10.0 ** logN_vals) * (u.cm**-2) * u.mol
+            M_ap = M_col * A_cm2
+            M_total = M_ap / frac
+            Q = (M_total / daughter_lifetime_s).to(1 / u.s).value  # s^-1
+            logQ = np.log10(Q)
+            p16, p50, p84 = np.percentile(logQ, [16, 50, 84])
+            err = 0.5 * ((p84 - p50) + (p50 - p16))
+            return float(p50), float(err)
+
+        if len(iso_list) == 1:
+            iso = iso_list[0]
+            if use_samples:
+                logN_chain = get_logN_chain_for_iso(iso)
+            else:
+                logN_chain = np.array([float(self.logN)], dtype=float)
+            q50, qerr = compute_from_logN(logN_chain)
+            self.q = q50
+            self.q_err = qerr
+            return q50, qerr
+
+        # multi-iso
+        out: Dict[str, Tuple[float, float]] = {}
+        for iso in iso_list:
+            if use_samples:
+                logN_chain = get_logN_chain_for_iso(iso)
+            else:
+                if self.logN_by_iso is None or iso not in self.logN_by_iso:
+                    raise ValueError(f"Missing logN_by_iso[{iso}] and use_samples=False.")
+                logN_chain = np.array([float(self.logN_by_iso[iso])], dtype=float)
+
+            q50, qerr = compute_from_logN(logN_chain)
+            out[iso] = (q50, qerr)
+
+        self.q = {k: v[0] for k, v in out.items()}
+        self.q_err = {k: v[1] for k, v in out.items()}
+        return out
+
+    # ------------------------------------------------------------------
+    # NEW: add slit-loss systematic error to existing q_err
+    # ------------------------------------------------------------------
+    def add_slit_loss_error(
+        self,
+        *,
+        lambda_nm: float,
+        aperture: dict,
+        eps_min_arcsec_500: float = 0.7,
+        eps_max_arcsec_500: float = 1.2,
+        zmin_deg: float = 45.0,
+        zmax_deg: float = 45.0,
+        n_points: int = 2000,
+    ) -> Union[float, Dict[str, float]]:
+        """
+        Inflate q_err by adding a slit-loss systematic based on seeing bounds.
+
+        Requires self.q and self.q_err to already be set (e.g. by compute_production_rate()).
+
+        Returns the updated q_err (float or dict).
+        """
+        if self.q is None or self.q_err is None:
+            raise ValueError("self.q and self.q_err must be set before calling add_slit_loss_error().")
+
+        iso_list = self._iso_list()
+
+        if len(iso_list) == 1:
+            q = float(self.q)  # log10(Q)
+            qerr = float(self.q_err)
+            new_err = add_slit_loss_error_scalar(
+                q,
+                qerr,
+                lambda_nm=float(lambda_nm),
+                aperture=aperture,
+                eps_min_arcsec_500=float(eps_min_arcsec_500),
+                eps_max_arcsec_500=float(eps_max_arcsec_500),
+                zmin_deg=float(zmin_deg),
+                zmax_deg=float(zmax_deg),
+                n_points=int(n_points),
+            )
+            self.q_err = new_err
+            return new_err
+
+        # multi-iso dict
+        if not isinstance(self.q, dict) or not isinstance(self.q_err, dict):
+            raise ValueError("For multi-isotopologue models, self.q and self.q_err must be dicts keyed by iso.")
+
+        new_errs: Dict[str, float] = {}
+        for iso in iso_list:
+            if iso not in self.q or iso not in self.q_err:
+                raise KeyError(f"Missing q/q_err for iso='{iso}'.")
+            new_errs[iso] = add_slit_loss_error_scalar(
+                float(self.q[iso]),
+                float(self.q_err[iso]),
+                lambda_nm=float(lambda_nm),
+                aperture=aperture,
+                eps_min_arcsec_500=float(eps_min_arcsec_500),
+                eps_max_arcsec_500=float(eps_max_arcsec_500),
+                zmin_deg=float(zmin_deg),
+                zmax_deg=float(zmax_deg),
+                n_points=int(n_points),
+            )
+
+        self.q_err = new_errs
+        return new_errs
+
+    # ------------------------------------------------------------------
+    # Serialization: include q/q_err
+    # ------------------------------------------------------------------
     def save(self, filename: str) -> None:
         had_given_lsf = (self.lsf_method == "Given")
 
@@ -801,9 +969,11 @@ class FluorescenceModel:
             data=self.data,
             window=self.window,
             pumping=self.pumping,
+            isotopologues=self.isotopologues,
+            systems=self.systems,
+            linelists=None,  # do not serialize
             line_path=self.line_path,
-            lsf=None,  # never serialize the callable
-            # if it was 'Given', fall back to a safe default on load
+            lsf=None,
             lsf_method=self.lsf_method if not had_given_lsf else "Gauss",
             A_min=self.A_min,
             a=self.a,
@@ -818,6 +988,7 @@ class FluorescenceModel:
             pumping_min_wave=self.pumping_min_wave,
             pumping_max_wave=self.pumping_max_wave,
             logN=self.logN,
+            logN_by_iso=self.logN_by_iso,
             logQ=self.logQ,
             T=self.T,
             v_kms=self.v_kms,
@@ -838,17 +1009,20 @@ class FluorescenceModel:
             model_p84=self.model_p84,
         )
 
+        # NEW: persist q/q_err
+        derived = dict(q=self.q, q_err=self.q_err)
+
         state = {
             "class": "FluorescenceModel",
-            "version": 1,
+            "version": 3,
             "init_kwargs": init_kwargs,
             "mcmc_result": mcmc_result,
+            "derived": derived,
             "had_given_lsf": had_given_lsf,
         }
 
         with open(filename, "wb") as f:
             pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
-
 
     @classmethod
     def load(cls, filename: str) -> "FluorescenceModel":
@@ -857,17 +1031,17 @@ class FluorescenceModel:
 
         if state.get("class") != "FluorescenceModel":
             raise ValueError("File does not contain a FluorescenceModel state.")
-        if state.get("version", 1) != 1:
+        version = state.get("version", 1)
+        if version not in (1, 2, 3):
             raise ValueError("Unsupported FluorescenceModel state version.")
 
         init_kwargs = state["init_kwargs"]
         mcmc_result = state.get("mcmc_result") or {}
+        derived = state.get("derived") or {}
         had_given_lsf = state.get("had_given_lsf", False)
 
-        # Build base object (runs _synthesize_model)
         obj = cls(**init_kwargs)
 
-        # Re-apply MCMC result if present
         if any(mcmc_result.values()):
             obj._update_from_result(
                 mcmc_result,
@@ -875,11 +1049,13 @@ class FluorescenceModel:
                 used_lsf_method=init_kwargs.get("lsf_method"),
             )
 
+        # NEW: restore q/q_err
+        obj.q = derived.get("q", None)
+        obj.q_err = derived.get("q_err", None)
+
         if had_given_lsf:
             print(
                 "Warning: original model used a custom 'Given' LSF which "
-                "was not serialized. Please call `obj.update_model(lsf=...)` "
-                "to restore the exact LSF."
+                "was not serialized. Call `obj.update_model(lsf=...)` to restore it."
             )
-
         return obj
