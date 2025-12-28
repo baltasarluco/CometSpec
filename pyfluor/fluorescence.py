@@ -81,6 +81,8 @@ class FluorescenceModel:
         error_col: str = "ERR_STACK",
         continuum_col: str = "CONTINUUM",
         omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,
+        seeing_corrected: bool = False,
+        include_rotations: bool = True,
     ) -> None:
         if pumping is None:
             raise ValueError("Pumping spectrum must be provided to FluorescenceModel.")
@@ -90,8 +92,9 @@ class FluorescenceModel:
         self.flux_col = flux_col
         self.error_col = error_col
         self.continuum_col = continuum_col
-        
+        self.seeing_corrected = seeing_corrected
         self.omega = omega
+        self.include_rotations = include_rotations
         
         self.window = window
         self.pumping = pumping
@@ -201,6 +204,7 @@ class FluorescenceModel:
         self.g_en_by_iso: Optional[Dict[str, np.ndarray]] = None
         self.g_ph_sum_by_iso: Optional[Dict[str, float]] = None
         self.g_en_sum_by_iso: Optional[Dict[str, float]] = None
+        self.model_by_iso: Optional[Dict[str, np.ndarray]] = None
 
         # "flat" convenience (single iso uses these)
         self.lines = None
@@ -306,7 +310,6 @@ class FluorescenceModel:
         a: Optional[float] = None,
         threads: Optional[int] = None,
         fig_file: str = "mcmc_fit",
-        include_rotations: bool = True,
     ) -> Dict[str, Any]:
         if data is not None:
             self.data = data
@@ -388,7 +391,7 @@ class FluorescenceModel:
             error_col=self.error_col,
             continuum_col=self.continuum_col,
             omega=self.omega,
-            include_rotations=include_rotations,
+            include_rotations=self.include_rotations,
         )
 
         self._update_from_result(result, used_lsf=lsf, used_lsf_method=lsf_method)
@@ -587,6 +590,7 @@ class FluorescenceModel:
         gen_by_iso: Dict[str, np.ndarray] = {}
         gphsum_by_iso: Dict[str, float] = {}
         gensum_by_iso: Dict[str, float] = {}
+        model_by_iso: Dict[str, np.ndarray] = {}
 
         if self.model_wave is None:
             wave = np.arange(self.window[0], self.window[1] + 0.01, 0.01, dtype=float)
@@ -616,11 +620,11 @@ class FluorescenceModel:
                 g_upper_col="g_upper",
                 g_lower_col="g_lower",
             )
-
-            coll_scaf = modeling.precompute_cn_collision_scaffold(lines_out, idx_to_level)
+            if self.include_rotations:
+                coll_scaf = modeling.precompute_cn_collision_scaffold(lines_out, idx_to_level)
 
             M = M_rad.copy()
-            if self.logQ is not None and self.T is not None:
+            if self.logQ is not None and self.T is not None and self.include_rotations:
                 M = modeling.apply_collisions_inplace(M, coll_scaf, Q=10 ** float(self.logQ), T=float(self.T))
             n = modeling.solve_with_normalization(M, verbose=False)
             g_ph, g_en, g_ph_sum, g_en_sum = modeling.g_factors(lines_out, n, A_col="A_ul")
@@ -660,6 +664,7 @@ class FluorescenceModel:
             gen_by_iso[iso] = g_en
             gphsum_by_iso[iso] = g_ph_sum
             gensum_by_iso[iso] = g_en_sum
+            model_by_iso[iso] = (wave, spec_i)
 
         self.lines_by_iso = lines_by_iso
         self.M_by_iso = M_by_iso
@@ -669,6 +674,7 @@ class FluorescenceModel:
         self.g_en_by_iso = gen_by_iso
         self.g_ph_sum_by_iso = gphsum_by_iso
         self.g_en_sum_by_iso = gensum_by_iso
+        self.model_by_iso = model_by_iso
 
         if len(iso_list) == 1:
             iso0 = iso_list[0]
@@ -768,6 +774,44 @@ class FluorescenceModel:
         if any(k in self.median_params for k in logN_keys):
             self.q = None
             self.q_err = None
+        
+        for i in iso_list:
+            non_iso_list = [j for j in iso_list if j != i]
+            params_per_iso = {k: v for k, v in self.median_params.items() if not any(k == f"logN_{j}" for j in non_iso_list)}
+            
+            # we need to synthetize a model just with this iso's logN and the pther parameters
+            sub_model = FluorescenceModel(
+                data=self.data,
+                window=self.window,
+                pumping=self.pumping,
+                isotopologues=[i],
+                systems=self.systems,
+                linelists=self.linelists,
+                line_path=self.line_path,
+                logN=params_per_iso.get(f"logN_{i}", self.logN),
+                logQ=params_per_iso.get("logQ", self.logQ),
+                T=params_per_iso.get("T", self.T),
+                v_kms=params_per_iso.get("v_kms", self.v_kms),
+                dlam=params_per_iso.get("dlam", self.dlam),
+                A_min=self.A_min,
+                pumping_min_wave=self.pumping_min_wave,
+                pumping_max_wave=self.pumping_max_wave,
+                lsf=self.lsf,
+                lsf_method=self.lsf_method,
+                sigma=self.sigma,
+                sigma1=self.sigma1,
+                sigma2=self.sigma2,
+                sigma_G=self.sigma_G,
+                fwhm_L=self.fwhm_L,
+                ratio=self.ratio,
+                omega=self.omega,
+                wave_col=self.wave_col,
+                flux_col=self.flux_col,
+                error_col=self.error_col,
+                continuum_col=self.continuum_col,
+                include_rotations=self.include_rotations,
+            )
+            self.model_by_iso[i] = (sub_model.model_wave, sub_model.best_model)
 
     # ------------------------------------------------------------------
     # NEW: Production rate from fitted chains (single or multi-iso)
@@ -827,7 +871,14 @@ class FluorescenceModel:
         # fraction in aperture
         N_in = haser.total_number(ap_sbpy)
         N_tot = haser.total_number(float(N_total_coma_km) * u.km)
-        frac = (N_in / N_tot).decompose().value
+        ratio = N_in / N_tot
+        if hasattr(ratio, "to_value"):
+            frac = float(ratio.to_value(u.dimensionless_unscaled))
+        elif hasattr(ratio, "value"):
+            frac = float(ratio.value)
+        else:
+            frac = float(ratio)
+
         if not np.isfinite(frac) or frac <= 0:
             raise ValueError("Haser aperture fraction is invalid (<=0 or non-finite). Check aperture/delta.")
 
@@ -859,7 +910,7 @@ class FluorescenceModel:
             M_col = (10.0 ** logN_vals) * (u.cm**-2) * u.mol
             M_ap = M_col * A_cm2
             M_total = M_ap / frac
-            Q = (M_total / daughter_lifetime_s).to(1 / u.s).value  # s^-1
+            Q = (M_total.value / daughter_lifetime_s).to(1 / u.s).value  # s^-1
             logQ = np.log10(Q)
             p16, p50, p84 = np.percentile(logQ, [16, 50, 84])
             err = 0.5 * ((p84 - p50) + (p50 - p16))
@@ -916,13 +967,15 @@ class FluorescenceModel:
         """
         if self.q is None or self.q_err is None:
             raise ValueError("self.q and self.q_err must be set before calling add_slit_loss_error().")
-
+        if self.seeing_corrected:
+            print('It was already corrected, there is no need to apply it again.')
+            return self.q_err
         iso_list = self._iso_list()
 
         if len(iso_list) == 1:
             q = float(self.q)  # log10(Q)
             qerr = float(self.q_err)
-            new_err = add_slit_loss_error_scalar(
+            new_err = helper.add_slit_loss_error_scalar(
                 q,
                 qerr,
                 lambda_nm=float(lambda_nm),
@@ -934,6 +987,7 @@ class FluorescenceModel:
                 n_points=int(n_points),
             )
             self.q_err = new_err
+            self.seeing_corrected = True
             return new_err
 
         # multi-iso dict
@@ -944,7 +998,7 @@ class FluorescenceModel:
         for iso in iso_list:
             if iso not in self.q or iso not in self.q_err:
                 raise KeyError(f"Missing q/q_err for iso='{iso}'.")
-            new_errs[iso] = add_slit_loss_error_scalar(
+            new_errs[iso] = helper.add_slit_loss_error_scalar(
                 float(self.q[iso]),
                 float(self.q_err[iso]),
                 lambda_nm=float(lambda_nm),
@@ -957,6 +1011,7 @@ class FluorescenceModel:
             )
 
         self.q_err = new_errs
+        self.seeing_corrected = True
         return new_errs
 
     # ------------------------------------------------------------------
@@ -1007,6 +1062,7 @@ class FluorescenceModel:
             best_model=self.best_model,
             model_p16=self.model_p16,
             model_p84=self.model_p84,
+            model_by_iso=self.model_by_iso,
         )
 
         # NEW: persist q/q_err
