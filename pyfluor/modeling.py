@@ -82,12 +82,12 @@ def normalize_systems_arg(systems: str | Sequence[str] | None) -> list[str]:
       - "ALL"      : no CN system filtering
     """
     if systems is None:
-        return ["BX00", "AX_dv1", "AX_dv2"]
+        return ["BX00", "AX_dv1"]
 
     if isinstance(systems, str):
         s = systems.strip().lower()
         if s in ("both", "bx+ax", "bxax"):
-            return ["BX00", "AX_dv1", 'AX_dv2']
+            return ["BX00", "AX_dv1", 'AX_dv2', 'AX_dv3']
         if s in ("all",):
             return ["ALL"]
         if s in ("bx", "b-x", "bx(0,0)", "bx00", "bx_00", "b_x_00"):
@@ -98,6 +98,8 @@ def normalize_systems_arg(systems: str | Sequence[str] | None) -> list[str]:
             return ["AX_dv1"]
         if s in ("ax(dv=2)", "ax_dv2"):
             return ["AX_dv2"]
+        if s in ("ax(dv=3)", "ax_dv3"):
+            return ["AX_dv3"]
         return [systems]
     else:
         out: list[str] = []
