@@ -83,6 +83,10 @@ class FluorescenceModel:
         omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,
         seeing_corrected: bool = False,
         include_rotations: bool = True,
+        pumping_v_kms: float = 0.0,
+        pumping_dlam_A: float = 0.0,
+        model_wave: Optional[np.ndarray] = None,
+
     ) -> None:
         if pumping is None:
             raise ValueError("Pumping spectrum must be provided to FluorescenceModel.")
@@ -96,6 +100,9 @@ class FluorescenceModel:
         self.omega = omega
         self.include_rotations = include_rotations
         
+        self.pumping_v_kms = float(pumping_v_kms)
+        self.pumping_dlam_A = float(pumping_dlam_A)
+
         self.window = window
         self.pumping = pumping
 
@@ -216,7 +223,7 @@ class FluorescenceModel:
         self.g_ph_sum = None
         self.g_en_sum = None
 
-        self.model_wave: Optional[np.ndarray] = None
+        self.model_wave = model_wave
         self.median_model: Optional[np.ndarray] = None
         self.best_model: Optional[np.ndarray] = None
         self.model_p16: Optional[np.ndarray] = None
@@ -298,7 +305,6 @@ class FluorescenceModel:
         isotopologues: Union[str, Sequence[str], None] = None,
         systems: Union[str, Sequence[str], None] = None,
         linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
-        line_path: Optional[str] = None,
         nwalkers: int = 20,
         nsteps: int = 1000,
         priors: Optional[Dict[str, Tuple[float, float]]] = None,
@@ -310,6 +316,8 @@ class FluorescenceModel:
         a: Optional[float] = None,
         threads: Optional[int] = None,
         fig_file: str = "mcmc_fit",
+        verbose: bool = True,
+        pruning: bool = True,
     ) -> Dict[str, Any]:
         if data is not None:
             self.data = data
@@ -337,11 +345,6 @@ class FluorescenceModel:
         if linelists is not None:
             self.linelists = linelists
 
-        if line_path is None:
-            line_path = self.line_path
-        else:
-            self.line_path = line_path
-
         if priors is None:
             priors = self.priors or {"logN": (9.0, 15.0), "logQ": (-5.0, 0.0), "T": (10.0, 1000.0)}
             print("No priors provided, using default priors: logN, logQ, T.")
@@ -365,6 +368,24 @@ class FluorescenceModel:
         else:
             self.threads = int(threads)
 
+        # ------------------------------
+        # ✅ NEW: fallbacks for parameters NOT being fit
+        # If priors does not include them, modeling.mcmc_fitting must use these,
+        # instead of magic defaults (-99/300/0/0).
+        # ------------------------------
+        init_logQ = float(self.logQ) if self.logQ is not None else -3.0
+        init_T = float(self.T) if self.T is not None else 300.0
+        init_v_kms = float(self.v_kms) if self.v_kms is not None else 0.0
+        init_dlam = float(self.dlam) if self.dlam is not None else 0.0
+
+        # ------------------------------
+        # ✅ NEW: pumping shift (J_nu sampling) consistency
+        # These control where J_nu is evaluated (Fraunhofer structure matters!)
+        # They are separate from emission shift v_kms/dlam which can still be fit.
+        # ------------------------------
+        pumping_v_kms = float(getattr(self, "pumping_v_kms", 0.0))
+        pumping_dlam_A = float(getattr(self, "pumping_dlam_A", 0.0))
+
         result = modeling.mcmc_fitting(
             self.data,
             window,
@@ -372,7 +393,6 @@ class FluorescenceModel:
             isotopologues=self.isotopologues,
             systems=self.systems,
             linelists=self.linelists,
-            line_path=line_path,
             nwalkers=nwalkers,
             nsteps=nsteps,
             priors=priors,
@@ -380,22 +400,38 @@ class FluorescenceModel:
             lsf_method=lsf_method,
             make_plots=make_plots,
             progress=progress,
-            A_min=self.A_min,
-            a=self.a,
-            threads=self.threads,
-            velocity_kms=0.0,
-            delta_lambda_A=0.0,
+            A_min=float(A_min),
+            a=float(a),
+            threads=int(threads),
+
+            # ✅ Pumping shift (affects J_nu → line ratios)
+            velocity_kms=pumping_v_kms,
+            delta_lambda_A=pumping_dlam_A,
+
+            # ✅ Fallbacks if not fit
+            init_logQ=init_logQ,
+            init_T=init_T,
+            init_v_kms=init_v_kms,
+            init_dlam=init_dlam,
+
             fig_file=fig_file,
             wave_col=self.wave_col,
             flux_col=self.flux_col,
             error_col=self.error_col,
             continuum_col=self.continuum_col,
             omega=self.omega,
-            include_rotations=self.include_rotations,
+            verbose=verbose,
+            pruning=pruning,
         )
 
         self._update_from_result(result, used_lsf=lsf, used_lsf_method=lsf_method)
+
+        # ✅ Ensure wrapper synthesis uses the same pumping shift used by the fit
+        self.pumping_v_kms = pumping_v_kms
+        self.pumping_dlam_A = pumping_dlam_A
+
         return result
+
 
     # ------------------------------------------------------------------
     # Public: update params & resynthesize (ONLY ADD: q/q_err reset logic)
@@ -601,11 +637,12 @@ class FluorescenceModel:
         spec_total = np.zeros_like(wave, dtype=float)
 
         for iso, df_trans in trans_by_iso.items():
+            # ✅ Pumping shift consistent with fitter (affects J_nu and thus line ratios)
             lines_theta = modeling.attach_pumping_and_labels(
                 df_trans,
                 self.pumping,
-                line_v_kms=0.0,
-                line_dlam_A=0.0,
+                line_v_kms=float(self.pumping_v_kms),
+                line_dlam_A=float(self.pumping_dlam_A),
                 lsf_for_Jnu=None,
                 lam_col="lambda_vac_A",
             )
@@ -620,12 +657,22 @@ class FluorescenceModel:
                 g_upper_col="g_upper",
                 g_lower_col="g_lower",
             )
+
             if self.include_rotations:
-                coll_scaf = modeling.precompute_cn_collision_scaffold(lines_out, idx_to_level)
+                coll_scaf = modeling.precompute_cn_collision_scaffold_fast(lines_out, idx_to_level)
+            else:
+                coll_scaf = dict(iu=np.array([], int), il=np.array([], int),
+                                gu=np.array([]), gl=np.array([]), dE=np.array([]))
 
             M = M_rad.copy()
+
+            # ✅ Collisions only if logQ/T are defined and include_rotations
             if self.logQ is not None and self.T is not None and self.include_rotations:
-                M = modeling.apply_collisions_inplace(M, coll_scaf, Q=10 ** float(self.logQ), T=float(self.T))
+                Q_lin = 10.0 ** float(self.logQ)
+                if np.isfinite(Q_lin) and Q_lin > 0.0:
+                    Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
+                    modeling.apply_collisions_inplace_fast(M, coll_scaf, Q=Q_lin, T=float(self.T), Cup_work=Cup_work)
+
             n = modeling.solve_with_normalization(M, verbose=False)
             g_ph, g_en, g_ph_sum, g_en_sum = modeling.g_factors(lines_out, n, A_col="A_ul")
 
@@ -640,6 +687,7 @@ class FluorescenceModel:
                         raise ValueError("For multi-iso, provide logN_by_iso or set logN as a common value.")
                     logN_i = float(self.logN)
 
+            # ✅ Emission shift is separate, applied in spectrum synthesis (same as fit model_flux)
             _, spec_i = modeling.synth_spectrum_from_lines(
                 lines_out,
                 g_line_energy=g_en,
@@ -649,7 +697,7 @@ class FluorescenceModel:
                 N_col_cm2=10.0 ** logN_i,
                 Omega_sr=self.omega,
                 grid=wave,
-                lsf=self.lsf,
+                lsf=self.lsf,  # you said you provide this -> fixed LSF, good
                 v_shift_kms=float(self.v_kms or 0.0),
                 dlam_shift_A=float(self.dlam or 0.0),
             )
@@ -665,6 +713,7 @@ class FluorescenceModel:
             gphsum_by_iso[iso] = g_ph_sum
             gensum_by_iso[iso] = g_en_sum
             model_by_iso[iso] = (wave, spec_i)
+
 
         self.lines_by_iso = lines_by_iso
         self.M_by_iso = M_by_iso
@@ -899,22 +948,36 @@ class FluorescenceModel:
             j = pkeys.index(key)
             return np.asarray(self.samples_pruned[:, j], float)
 
+
         def compute_from_logN(logN_vals: np.ndarray) -> Tuple[float, float]:
             """
-            Given logN chain, produce log10(Q) chain:
-              M_col = 10^logN [cm^-2] * mol
-              M_ap = M_col * A_cm2  [mol]
-              M_total = M_ap / frac
-              Q = M_total / lifetime
+            logN_vals: log10(column density) in molecules / cm^2
+
+            Steps:
+            Ncol  = 10^logN  [molecules cm^-2]
+            N_ap  = Ncol * A_cm2        [molecules]
+            N_tot = N_ap / frac         [molecules]
+            Q     = N_tot / tau         [molecules s^-1]
             """
-            M_col = (10.0 ** logN_vals) * (u.cm**-2) * u.mol
-            M_ap = M_col * A_cm2
-            M_total = M_ap / frac
-            Q = (M_total.value / daughter_lifetime_s).to(1 / u.s).value  # s^-1
-            logQ = np.log10(Q)
+            # column density in molecules / cm^2
+            Ncol = (10.0 ** np.asarray(logN_vals, float)) / (u.cm**2)
+
+            # molecules in the aperture
+            N_ap = Ncol * A_cm2
+
+            # total molecules in coma (Haser fraction correction)
+            N_tot = N_ap / frac
+
+            # production rate
+            tau = daughter_lifetime_s.to(u.s)
+            Q = (N_tot / tau).to(1 / u.s)  # molecules/s (dimensionally 1/s)
+
+            logQ = np.log10(Q.value)
+
             p16, p50, p84 = np.percentile(logQ, [16, 50, 84])
             err = 0.5 * ((p84 - p50) + (p50 - p16))
             return float(p50), float(err)
+
 
         if len(iso_list) == 1:
             iso = iso_list[0]

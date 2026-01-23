@@ -23,7 +23,7 @@ B) Collisions (rotations):
    - If include_rotations=True  -> you must provide lower-state properties:
         lower_es, lower_v, lower_J, lower_sym, E_lower_cm1
      OR, for Brooke lists, set include_rotations=True and provide those columns
-     by mapping from the Brooke file (not included by default).
+     by mapping from the Brooke file (not included by defA_ult).
 
 C) ΔE meaning:
    - Photon energy: E_cm1 = 1/lambda(cm)  (transition wavenumber)
@@ -39,6 +39,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import emcee
 import corner
+import warnings
+
 
 from astropy import constants as const
 from astropy import units as u
@@ -46,6 +48,8 @@ from astropy.table import Table
 
 from . import helper
 
+HC_OVER_K_B_KCM = (const.h * const.c / const.k_B).to_value(u.K * u.cm)
+H_CGS = const.h.cgs.value  # erg*s
 
 # =============================================================================
 # Small utilities
@@ -78,18 +82,22 @@ def normalize_systems_arg(systems: str | Sequence[str] | None) -> list[str]:
       - "ALL"      : no CN system filtering
     """
     if systems is None:
-        return ["BX00", "AX_dv1"]
+        return ["BX00", "AX_dv1", "AX_dv2"]
 
     if isinstance(systems, str):
         s = systems.strip().lower()
         if s in ("both", "bx+ax", "bxax"):
-            return ["BX00", "AX_dv1"]
+            return ["BX00", "AX_dv1", 'AX_dv2']
         if s in ("all",):
             return ["ALL"]
         if s in ("bx", "b-x", "bx(0,0)", "bx00", "bx_00", "b_x_00"):
             return ["BX00"]
-        if s in ("ax", "a-x", "ax(dv=1)", "ax_dv1", "dv=1", "deltav=1"):
+        if s in ("ax", "a-x"):
+            return ["AX_dv1", 'AX_dv2']
+        if s in ("ax(dv=1)", "ax_dv1"):
             return ["AX_dv1"]
+        if s in ("ax(dv=2)", "ax_dv2"):
+            return ["AX_dv2"]
         return [systems]
     else:
         out: list[str] = []
@@ -331,8 +339,9 @@ def filter_cn_systems(
         if "BX00" in tokens:
             masks.append((df["eS'"] == "B") & (df["v'"] == 0) & (df["v''"] == 0))
         if "AX_dv1" in tokens:
-            masks.append((df["eS'"] == "A") & ((df["v'"] - df["v''"]) == 1))
-
+            masks.append((df["eS'"] == "A") & (np.abs(df["v'"] - df["v''"]) == 1))
+        if "AX_dv2" in tokens:
+            masks.append((df["eS'"] == "A") & (np.abs(df["v'"] - df["v''"]) == 2))
         if not masks:
             return df.iloc[0:0].reset_index(drop=True)
 
@@ -473,7 +482,7 @@ def build_rate_matrix_nbar(
     lines_out = lines.copy()
 
     nu = np.asarray(lines_out["Frequency_Hz"], float) * u.Hz
-    Aul = np.asarray(lines_out[A_col], float) / u.s
+    A_ul = np.asarray(lines_out[A_col], float) / u.s
 
     Jnu_cgs = np.asarray(lines_out["J_nu_erg_cm2_s_Hz_sr"], float) * (u.erg / (u.cm**2 * u.s * u.Hz * u.sr))
     Jnu_SI = Jnu_cgs.to(u.W / (u.m**2 * u.Hz * u.sr))
@@ -481,11 +490,11 @@ def build_rate_matrix_nbar(
     gu = np.asarray(lines_out[g_upper_col], float)
     gl = np.asarray(lines_out[g_lower_col], float)
 
-    B_lu = (Aul * const.c**2 / (2.0 * const.h * nu**3) * (gu / gl)).decompose().value
-    B_ul = (Aul * const.c**2 / (2.0 * const.h * nu**3)).decompose().value
+    B_lu = (A_ul * const.c**2 / (2.0 * const.h * nu**3) * (gu / gl)).decompose().value
+    B_ul = (A_ul * const.c**2 / (2.0 * const.h * nu**3)).decompose().value
 
     R_lu = B_lu * Jnu_SI.value
-    R_ul = Aul.value
+    R_ul = A_ul.value
     if include_stim_emission:
         R_ul = R_ul + B_ul * Jnu_SI.value
 
@@ -691,6 +700,29 @@ def precompute_cn_collision_scaffold(
         dE=np.asarray(dE_list, float),  # cm^-1
     )
 
+def precompute_cn_collision_scaffold_fast(*args, **kwargs) -> dict:
+    """
+    Wrapper around precompute_cn_collision_scaffold that adds precomputed arrays
+    to avoid astropy and repeated conversions in the inner loop.
+
+    Adds:
+      - dE_over_k_K : (h c / kB) * dE_cm1, in Kelvin
+      - gu_over_gl  : gu/gl
+    """
+    sc = precompute_cn_collision_scaffold(*args, **kwargs)
+
+    if sc.get("iu", np.array([])).size == 0:
+        sc["dE_over_k_K"] = np.array([], float)
+        sc["gu_over_gl"] = np.array([], float)
+        return sc
+
+    dE_cm1 = np.asarray(sc["dE"], float)
+    gu = np.asarray(sc["gu"], float)
+    gl = np.asarray(sc["gl"], float)
+
+    sc["dE_over_k_K"] = HC_OVER_K_B_KCM * dE_cm1
+    sc["gu_over_gl"] = gu / gl
+    return sc
 
 def apply_collisions_inplace(M: np.ndarray, scaffold: Dict[str, np.ndarray], Q: float, T: float) -> np.ndarray:
     """
@@ -713,13 +745,49 @@ def apply_collisions_inplace(M: np.ndarray, scaffold: Dict[str, np.ndarray], Q: 
     # cm^-1 -> erg : (h*c)*(wavenumber)
     dE_erg = (const.h * const.c * (dE_cm1 / u.cm)).to(u.erg).value
 
-    Cdown = Q * np.ones_like(iu, dtype=float)
+    Cdown = float(Q)  # scalar
     Cup = (gu / gl) * Cdown * np.exp(-dE_erg / kT)
 
     np.add.at(M, (iu, iu), -Cdown)
     np.add.at(M, (il, il), -Cup)
     np.add.at(M, (il, iu),  Cdown)
     np.add.at(M, (iu, il),  Cup)
+    return M
+
+def apply_collisions_inplace_fast(
+    M: np.ndarray,
+    scaffold: Dict[str, np.ndarray],
+    Q: float,
+    T: float,
+    Cup_work: np.ndarray,
+) -> np.ndarray:
+    """
+    Fast collisions, no allocations:
+    - uses scaffold["dE_over_k_K"] (Kelvin) and scaffold["gu_over_gl"]
+    - writes Cup into Cup_work
+    """
+    iu = scaffold.get("iu", None)
+    if iu is None or iu.size == 0 or Q <= 0.0 or not np.isfinite(T) or T <= 0.0:
+        return M
+
+    il = scaffold["il"]
+    dE_over_k_K = scaffold["dE_over_k_K"]
+    gu_over_gl = scaffold["gu_over_gl"]
+
+    # Cup_work = exp(-dE/T) * (gu/gl) * Q
+    np.divide(dE_over_k_K, T, out=Cup_work)     # Cup_work = dE/T
+    np.negative(Cup_work, out=Cup_work)         # Cup_work = -dE/T
+    np.exp(Cup_work, out=Cup_work)              # Cup_work = exp(-dE/T)
+    Cup_work *= gu_over_gl                      # *= gu/gl
+    Cup_work *= Q                               # *= Q
+
+    # Cdown is scalar Q (same as before)
+    Cdown = Q
+
+    np.add.at(M, (iu, iu), -Cdown)
+    np.add.at(M, (il, il), -Cup_work)
+    np.add.at(M, (il, iu),  Cdown)
+    np.add.at(M, (iu, il),  Cup_work)
     return M
 
 
@@ -747,6 +815,33 @@ def solve_with_normalization(M: np.ndarray, *, verbose: bool = True) -> np.ndarr
         print("[solver] sum(n) =", n.sum())
     return n
 
+def solve_with_normalization_fast(M, A_work, b_work):
+    """
+    Solve M @ n = 0 with sum(n) = 1
+    Reuses buffers, no allocation.
+    """
+    n_levels = M.shape[0]
+
+    # Copy M → A_work (no allocation)
+    np.copyto(A_work, M)
+
+    # Reset b
+    b_work.fill(0.0)
+
+    # Normalization row
+    A_work[0, :] = 1.0
+    b_work[0] = 1.0
+
+    n, *_ = np.linalg.lstsq(A_work, b_work, rcond=None)
+
+    # Safety
+    n = np.clip(n, 0.0, None)
+    s = n.sum()
+    if s <= 0.0:
+        raise RuntimeError("Degenerate M")
+    n /= s
+    return n
+
 
 def g_factors(
     lines_with_rates: Table,
@@ -756,14 +851,14 @@ def g_factors(
 ):
     """Return per-line (g_phot, g_energy, Σg_phot, Σg_energy)."""
     nu = np.asarray(lines_with_rates["__nu_Hz"], float)
-    Aul = np.asarray(lines_with_rates[A_col], float)
+    A_ul = np.asarray(lines_with_rates[A_col], float)
     ui = np.asarray(lines_with_rates["__upper_idx"], int)
 
     nu = np.nan_to_num(nu, 0.0, 0.0, 0.0)
-    Aul = np.nan_to_num(Aul, 0.0, 0.0, 0.0)
+    A_ul = np.nan_to_num(A_ul, 0.0, 0.0, 0.0)
 
     n_u = n[ui]
-    g_ph = n_u * Aul
+    g_ph = n_u * A_ul
     g_en = const.h.cgs.value * nu * g_ph
 
     g_ph = np.nan_to_num(g_ph, 0.0, 0.0, 0.0)
@@ -771,6 +866,39 @@ def g_factors(
 
     return g_ph, g_en, float(g_ph.sum()), float(g_en.sum())
 
+def g_factors_fast_from_cache(
+    *,
+    ui: np.ndarray,      # int array of upper indices per line
+    A_ul: np.ndarray,     # float array of A_ul per line
+    hnu: np.ndarray,     # float array of (h * nu) per line in erg
+    n: np.ndarray,
+    out_g_ph: Optional[np.ndarray] = None,
+    out_g_en: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Fast version of g_factors using precomputed arrays.
+    Returns (g_ph, g_en) arrays (same length as ui/A_ul/hnu).
+    """
+    n_u = n[ui]  # gather upper-level populations for each line
+
+    # g_ph = n_u * A_ul
+    if out_g_ph is None:
+        g_ph = n_u * A_ul
+    else:
+        np.multiply(n_u, A_ul, out=out_g_ph)
+        g_ph = out_g_ph
+
+    # g_en = (h*nu) * g_ph
+    if out_g_en is None:
+        g_en = hnu * g_ph
+    else:
+        np.multiply(hnu, g_ph, out=out_g_en)
+        g_en = out_g_en
+
+    # keep behavior similar to old function (avoid NaNs/neg)
+    np.nan_to_num(g_ph, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.nan_to_num(g_en, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return g_ph, g_en
 
 # =============================================================================
 # Spectrum synthesis
@@ -915,7 +1043,7 @@ def make_lsf(params: Dict[str, float], mode: str) -> Optional[Callable[[np.ndarr
 
 
 # =============================================================================
-# MCMC fitting (multi-isotopologue + systems + defaults or user linelists)
+# MCMC fitting (multi-isotopologue + systems + defA_ults or user linelists)
 # =============================================================================
 
 def mcmc_fitting(
@@ -935,9 +1063,6 @@ def mcmc_fitting(
     include_deltaJ0_parity_mix: bool = True,
     require_X_only_for_rot: bool = True,
 
-    # legacy:
-    line_path: Optional[str] = None,
-
     nwalkers: int = 50,
     nsteps: int = 1000,
     priors: Optional[Dict[str, Tuple[float, float]]] = None,
@@ -952,25 +1077,32 @@ def mcmc_fitting(
     a: float = 3,
     threads: int = 1,
 
+    # NOTE: these control *pumping* wavelength shift for J_nu (radiative rates)
     velocity_kms: float = 0.0,
     delta_lambda_A: float = 0.0,
+
+    # NOTE: these are fallbacks for parameters not present in priors
+    init_logQ: float = -3.0,
+    init_T: float = 300.0,
+    init_v_kms: float = 0.0,
+    init_dlam: float = 0.0,
+
     fig_file: Optional[str] = None,
     wave_col: str = "WAVE",
     flux_col: str = "FLUX_STACK",
     error_col: str = "ERR_STACK",
     continuum_col: str = "CONTINUUM",
-    omega : Optional[float] = None,
+    omega: Optional[float] = None,
+    verbose: bool = True,
+    pruning: bool = True,
 ) -> Dict[str, Any]:
     """
     MCMC fit of fluorescence in a wavelength window.
 
-    Multi-isotopologue behavior:
-      - total model spectrum = sum over isotopologues
-      - use logN (single iso) or logN_<iso> (multi iso)
-
-    Rotational collisions:
-      - if include_rotations=True, each iso linelist must include:
-          lower_es, lower_v, lower_J, lower_sym, E_lower_cm1
+    Fixes included:
+    - If logQ/T/v_kms/dlam are not in priors, they no longer defA_ult to magic
+      numbers (-99/300/0/0). They fall back to init_* values supplied by caller.
+    - Pumping (J_nu) is evaluated using velocity_kms/delta_lambda_A (as before).
     """
     if priors is None:
         raise ValueError("Please provide a dict of priors for the parameters to fit.")
@@ -1017,7 +1149,7 @@ def mcmc_fitting(
         if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
             raise ValueError(f"Bad prior for {name!r}: {priors[name]}")
 
-    # ---------- 1) Line lists: defaults or user ----------
+    # ---------- 1) Line lists: defA_ults or user ----------
     if linelists is None:
         trans_by_iso = load_default_cn_transitions(
             isotopologues=iso_list,
@@ -1051,8 +1183,8 @@ def mcmc_fitting(
         lines_theta = attach_pumping_and_labels(
             df_trans,
             pumping,
-            line_v_kms=velocity_kms,
-            line_dlam_A=delta_lambda_A,
+            line_v_kms=float(velocity_kms),
+            line_dlam_A=float(delta_lambda_A),
             lsf_for_Jnu=None,
             lam_col="lambda_vac_A",
         )
@@ -1067,9 +1199,15 @@ def mcmc_fitting(
             g_upper_col="g_upper",
             g_lower_col="g_lower",
         )
+        ui = np.asarray(lines_out["__upper_idx"], dtype=np.int64)
+        A_ul = np.asarray(lines_out["A_ul"], dtype=np.float64)          # same column you used in g_factors
+        nu = np.asarray(lines_out["__nu_Hz"], dtype=np.float64)        # already cached as numeric Hz
+        hnu = H_CGS * nu 
+        gph_work = np.empty_like(A_ul, dtype=float)
+        gen_work = np.empty_like(A_ul, dtype=float)
 
         if include_rotations:
-            coll_scaf = precompute_cn_collision_scaffold(
+            coll_scaf = precompute_cn_collision_scaffold_fast(
                 lines_out, idx_to_level,
                 include_deltaJ0_parity_mix=include_deltaJ0_parity_mix,
                 require_X_only=require_X_only_for_rot,
@@ -1077,7 +1215,30 @@ def mcmc_fitting(
         else:
             coll_scaf = _empty_scaffold()
 
-        cache[iso] = dict(M_rad=M_rad, idx_to_level=idx_to_level, lines_out=lines_out, coll_scaf=coll_scaf)
+        M_work = np.empty_like(M_rad)              # reusable matrix buffer
+        A_work = np.empty_like(M_rad)              # reusable solver matrix buffer
+        b_work = np.zeros(M_rad.shape[0], float)   # reusable RHS vector
+        Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
+
+
+        cache[iso] = dict(
+            M_rad=M_rad,
+            idx_to_level=idx_to_level,
+            lines_out=lines_out,
+            coll_scaf=coll_scaf,
+
+            # ✅ new buffers
+            M_work=M_work,
+            A_work=A_work,
+            b_work=b_work,
+            ui=ui,
+            A_ul=A_ul,
+            hnu=hnu,
+            Cup_work=Cup_work,
+            gph_work=gph_work,
+            gen_work=gen_work,
+
+        )
 
     # ---------- 3) Observed data subset ----------
     def _col(obj, name: str) -> np.ndarray:
@@ -1117,26 +1278,47 @@ def mcmc_fitting(
 
     def model_flux(theta: Sequence[float], wave: np.ndarray) -> np.ndarray:
         pars = theta_to_params(theta)
+        wmin = float(np.min(wave))
+        wmax = float(np.max(wave))
 
-        logQ = float(pars.get("logQ", -99.0))
-        T = float(pars.get("T", 300.0))
-        v_kms = float(pars.get("v_kms", 0.0))
-        dlam = float(pars.get("dlam", 0.0))
+        # ✅ Correct fallback behavior:
+        # If not being fit, use init_* (provided by caller), not magic hardcoded defaults.
+        logQ = float(pars["logQ"]) if "logQ" in pars else float(init_logQ)
+        T = float(pars["T"]) if "T" in pars else float(init_T)
+        v_kms = float(pars["v_kms"]) if "v_kms" in pars else float(init_v_kms)
+        dlam = float(pars["dlam"]) if "dlam" in pars else float(init_dlam)
 
         lsf_fun = make_lsf_local(pars)
-        Q = 10.0**logQ if np.isfinite(logQ) else 0.0
 
+        Q = 10.0 ** logQ if np.isfinite(logQ) else 0.0
         spec_total = np.zeros_like(wave, dtype=float)
+
+        use_reuse = (threads == 1)   # threads is captured from outer scope
 
         for iso in iso_list:
             C = cache[iso]
-            M = C["M_rad"].copy()
+            if use_reuse:
+                M = C["M_work"]
+                np.copyto(M, C["M_rad"])
+            else:
+                M = C["M_rad"].copy()
 
             if Q > 0.0 and include_rotations:
-                M = apply_collisions_inplace(M, C["coll_scaf"], Q=Q, T=T)
+                apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q, T=T, Cup_work=C["Cup_work"])
 
-            n = solve_with_normalization(M, verbose=False)
-            _, g_en, *_ = g_factors(C["lines_out"], n, A_col="A_ul")
+            if use_reuse:
+                n = solve_with_normalization_fast(M, C["A_work"], C["b_work"])
+            else:
+                n = solve_with_normalization(M, verbose=False)
+
+            g_ph, g_en = g_factors_fast_from_cache(
+                                                    ui=C["ui"],
+                                                    A_ul=C["A_ul"],
+                                                    hnu=C["hnu"],
+                                                    n=n,
+                                                    out_g_ph=C["gph_work"],
+                                                    out_g_en=C["gen_work"],
+                                                )
 
             # Column density per iso
             if len(iso_list) == 1 and "logN" in pars:
@@ -1150,10 +1332,69 @@ def mcmc_fitting(
             _, spec_i = synth_spectrum_from_lines(
                 C["lines_out"],
                 g_line_energy=g_en,
-                lam_min=float(wave.min()),
-                lam_max=float(wave.max()),
+                lam_min=wmin,
+                lam_max=wmax,
                 lam_col="Wave_vac_AA",
-                N_col_cm2=10.0**logN_i,
+                N_col_cm2=10.0 ** logN_i,
+                Omega_sr=omega,
+                grid=wave,
+                lsf=lsf_fun,
+                v_shift_kms=v_kms,
+                dlam_shift_A=dlam,
+            )
+            spec_total += spec_i
+
+        return spec_total
+    def model_flux_post(theta: Sequence[float], wave: np.ndarray) -> np.ndarray:
+        """
+        Post-processing model evaluation.
+        Always runs single-threaded, so safe to reuse buffers.
+        """
+        wmin = float(np.min(wave))
+        wmax = float(np.max(wave))
+
+        pars = theta_to_params(theta)
+
+        logQ = float(pars["logQ"]) if "logQ" in pars else float(init_logQ)
+        T = float(pars["T"]) if "T" in pars else float(init_T)
+        v_kms = float(pars["v_kms"]) if "v_kms" in pars else float(init_v_kms)
+        dlam = float(pars["dlam"]) if "dlam" in pars else float(init_dlam)
+
+        lsf_fun = make_lsf_local(pars)
+        Q = 10.0 ** logQ if np.isfinite(logQ) else 0.0
+
+        spec_total = np.zeros_like(wave, dtype=float)
+
+        for iso in iso_list:
+            C = cache[iso]
+            M = C["M_work"]
+            np.copyto(M, C["M_rad"])
+
+            if Q > 0.0 and include_rotations:
+                apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q, T=T, Cup_work=C["Cup_work"])
+
+            n = solve_with_normalization_fast(M, C["A_work"], C["b_work"])
+
+            g_ph, g_en = g_factors_fast_from_cache(
+                ui=C["ui"], A_ul=C["A_ul"], hnu=C["hnu"], n=n,
+                out_g_ph=C["gph_work"], out_g_en=C["gen_work"]
+            )
+
+            if len(iso_list) == 1 and "logN" in pars:
+                logN_i = float(pars["logN"])
+            else:
+                key = f"logN_{iso}"
+                if key not in pars:
+                    raise ValueError(f"Missing parameter {key!r} in priors for multi-isotopologue fit.")
+                logN_i = float(pars[key])
+
+            _, spec_i = synth_spectrum_from_lines(
+                C["lines_out"],
+                g_line_energy=g_en,
+                lam_min=wmin,
+                lam_max=wmax,
+                lam_col="Wave_vac_AA",
+                N_col_cm2=10.0 ** logN_i,
                 Omega_sr=omega,
                 grid=wave,
                 lsf=lsf_fun,
@@ -1186,13 +1427,9 @@ def mcmc_fitting(
     # ---------- 5) Run emcee ----------
     ndim = len(param_keys)
     nburn = nsteps // 2
-
     print("Number of iterations:", ndim * nwalkers * nsteps)
 
-    p0 = np.array(
-        [[np.random.uniform(*priors[name]) for name in param_keys]
-         for _ in range(nwalkers)]
-    )
+    p0 = np.array([[np.random.uniform(*priors[name]) for name in param_keys] for _ in range(nwalkers)])
 
     move = emcee.moves.StretchMove(a=a)
     sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob, moves=move, threads=threads)
@@ -1207,33 +1444,79 @@ def mcmc_fitting(
     best_idx = int(np.argmax(flat_lnprob))
     best_theta = flat_chain[best_idx]
     best_params = theta_to_params(best_theta)
-
-    print("#" * 50)
-    print("*** Best fit (no pruning) ***")
-    for name in param_keys:
-        print(f"{name}: {best_params[name]:.6g}")
+    if verbose:
+        print("#" * 50)
+        print("*** Best fit (no pruning) ***")
+        for name in param_keys:
+            print(f"{name}: {best_params[name]:.6g}")
 
     af = sampler.acceptance_fraction
-    print("#" * 50)
-    print("*** Acceptance Fraction ***")
-    print("Mean acceptance fraction:", np.mean(af))
+    if verbose:
+        print("#" * 50)
+        print("*** Acceptance Fraction ***")
+        print("Mean acceptance fraction:", np.mean(af))
+    af_msg = '''As a rule of thumb, the acceptance fraction (af) should be 
+                            between 0.2 and 0.5
+            If af < 0.2 decrease the MCMCA parameter
+            If af > 0.5 increase the MCMCA parameter
+            '''
+    if verbose:
+        print("Mean acceptance fraction:", np.mean(af))
+    if np.mean(af)<0.2 or np.mean(af)>0.5:
+        print(af_msg)
+        warnings.warn("Acceptance fraction out of bounds.", UserWarning)
 
     # ---------- 7) Burn-in removal ----------
     samples = chain[nburn:, :, :].reshape(-1, ndim)
     lnprob_burn = lnprob_full[nburn:, :].reshape(-1)
 
     # ---------- 8) Simple pruning ----------
-    def prune(samples_: np.ndarray, lnprob_arr: np.ndarray, scaler: float = 5.0):
-        maxln = lnprob_arr.max()
-        dln = np.abs(lnprob_arr - maxln)
+    def prune(samples: np.ndarray,
+              lnprob_arr: np.ndarray,
+              scaler: float = 5.0,
+              quiet: bool = False):
+        minlnprob = lnprob_arr.max()
+        dln = np.abs(lnprob_arr - minlnprob)
+        med = np.median(dln)
+        avg = np.mean(dln)
+        skew = abs(avg - med)
         rms = np.std(dln)
-        mask = dln < scaler * rms if np.isfinite(rms) and rms > 0 else np.ones_like(dln, dtype=bool)
-        return samples_[mask], lnprob_arr[mask]
+        mask = dln < scaler * rms
+        ln2 = lnprob_arr[mask]
+        s2 = samples[mask]
 
-    try:
-        samples_pruned, lnprob_pruned = prune(samples, lnprob_burn)
-    except Exception as exc:
-        print("Pruning failed:", exc)
+        prev_med = 0.0
+        while skew > 0.1 * med and ln2.size > 0:
+            minlnprob = ln2.max()
+            dln = np.abs(ln2 - minlnprob)
+            rms = np.std(dln)
+            mask = dln < scaler * rms
+            if mask.sum() == ln2.size:
+                mask = dln < (scaler / 2.0) * rms
+            ln2 = ln2[mask]
+            s2 = s2[mask]
+            dln = np.abs(ln2 - minlnprob)
+            med = np.median(dln)
+            avg = np.mean(dln)
+            skew = abs(avg - med)
+            if not quiet:
+                print(med, avg, skew)
+            if med == prev_med:
+                scaler /= 1.5
+            prev_med = med
+
+        good = ln2 <= ln2.max()
+        return s2[good], ln2[good]
+    if pruning:
+        if verbose:
+            print("#" * 50)
+            print("*** Pruning... ***")
+        try:
+            samples_pruned, lnprob_pruned = prune(samples, lnprob_burn, quiet=not progress)
+        except Exception as exc:
+            print("Pruning failed:", exc)
+            samples_pruned, lnprob_pruned = samples, lnprob_burn
+    else:
         samples_pruned, lnprob_pruned = samples, lnprob_burn
 
     # ---------- 9) Posterior summaries ----------
@@ -1254,46 +1537,59 @@ def mcmc_fitting(
     n_draw = min(200, samples_pruned.shape[0])
     model_stack = np.empty((n_draw, x_model.size))
     for i in range(n_draw):
-        model_stack[i] = model_flux(samples_pruned[i], x_model)
+        model_stack[i] = model_flux_post(samples_pruned[i], x_model)
 
     theta_med = [median_params[k] for k in param_keys]
-    best_model = model_flux(theta_med, x_model)
+    best_model = model_flux_post(theta_med, x_model)
 
     p16_m, p50_m, p84_m = np.percentile(model_stack, [16, 50, 84], axis=0)
     median_model = p50_m
     model_p16 = p16_m
     model_p84 = p84_m
 
-    # ---------- 11) Optional plots ----------
+    param_labels = {
+        "logN": r"log N [mol cm$^{-2}$]",
+        "logQ": r"log Q [s$^{-1}$]",
+        "T": r"T [K]",
+        "v_kms": r"$\Delta$v [km s$^{-1}$]",
+        "dlam": r"$\Delta \lambda$ [Å]",
+        "sigma": r"$\sigma$ [Å]",
+        "sigma1": r"$\sigma_1$ [Å]",
+        "sigma2": r"$\sigma_2$ [Å]",
+        "sigma_G": r"$\sigma_G$ [Å]",
+        "fwhm_L": r"FWHM$_L$ [Å]",
+        "ratio": r"Ratio",}
     if make_plots:
+        # traces
         fig, axes = plt.subplots(ndim, 1, figsize=(8, 2 * ndim), sharex=True)
         if ndim == 1:
             axes = [axes]
-        steps = np.arange(chain.shape[0])
+
+        # chain has shape (nsteps, nwalkers, ndim)
+        nsteps_chain, nwalkers_chain, _ = chain.shape
+        steps = np.arange(nsteps_chain)
+
         for j, name in enumerate(param_keys):
-            for w in range(chain.shape[1]):
+            for w in range(nwalkers_chain):
+                # use [:, w, j] not [w, :, j]
                 axes[j].plot(steps, chain[:, w, j], alpha=0.7, lw=0.8)
-            axes[j].set_ylabel(name)
+            axes[j].set_ylabel(param_labels[name])
         axes[-1].set_xlabel("iteration")
         fig.tight_layout()
-        if fig_file:
-            plt.savefig(f"{fig_file}_mcmc_traces.pdf", dpi=300, format="pdf")
+        plt.savefig(f"{fig_file}_mcmc_traces.pdf", dpi=300, format='pdf')
         plt.show()
 
+        # corner
         corner.corner(
             samples_pruned,
-            labels=param_keys,
-            title_kwargs={"y": 1.05},
-            title_fmt=".3f",
-            use_math_text=True,
-            bins=15,
-            quantiles=[0.16, 0.5, 0.84],
-            show_titles=True,
+            labels=[param_labels[k] for k in param_keys],
+            title_kwargs={'y':1.05},title_fmt=".3f",use_math_text=True,bins=15,quantiles=[0.16, 0.5, 0.84],show_titles=True,
+                color='lightseagreen',hist_kwargs={'color':'black','linewidth':1.5},contour_kwargs={'linewidths':1,'colors':'black'}, spacing=0.001
         )
-        if fig_file:
-            plt.savefig(f"{fig_file}_corner.pdf", dpi=300, format="pdf")
+        plt.savefig(f"{fig_file}_corner.pdf", dpi=300, format='pdf')
         plt.show()
 
+        # data vs model
         plt.figure(figsize=(10, 6))
         plt.plot(x_fit, y_fit, label="Data (cont-sub)", color="black", alpha=0.8)
         plt.fill_between(
@@ -1305,12 +1601,11 @@ def mcmc_fitting(
             label="1σ",
         )
         plt.plot(x_model, median_model, label="Median Model", color="crimson", alpha=0.9)
-        plt.xlabel("Wavelength (Å)")
-        plt.ylabel("Flux")
+        plt.xlabel("Wavelength [Å]")
+        plt.ylabel("Flux [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]")
         plt.legend()
         plt.tight_layout()
-        if fig_file:
-            plt.savefig(f"{fig_file}_fit.pdf", dpi=300, format="pdf")
+        plt.savefig(f"{fig_file}_fit.pdf", dpi=300, format='pdf')
         plt.show()
 
     return {
