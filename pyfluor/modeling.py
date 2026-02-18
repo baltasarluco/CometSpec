@@ -1550,8 +1550,8 @@ def mcmc_fitting(
     model_p84 = p84_m
 
     param_labels = {
-        "logN": r"log N [mol cm$^{-2}$]",
-        "logQ": r"log Q [s$^{-1}$]",
+        "logN": r"log(N/[mol cm$^{-2}$])",
+        "logQ": r"log(Q/[s$^{-1}$])",
         "T": r"T [K]",
         "v_kms": r"$\Delta$v [km s$^{-1}$]",
         "dlam": r"$\Delta \lambda$ [Å]",

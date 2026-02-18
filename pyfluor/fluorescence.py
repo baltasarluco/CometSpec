@@ -422,6 +422,7 @@ class FluorescenceModel:
             omega=self.omega,
             verbose=verbose,
             pruning=pruning,
+            include_rotations=self.include_rotations,
         )
 
         self._update_from_result(result, used_lsf=lsf, used_lsf_method=lsf_method)
