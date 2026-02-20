@@ -634,7 +634,12 @@ class FluorescenceModel:
             self.model_wave = wave
         else:
             wave = np.asarray(self.model_wave, float)
-
+            # check if the window is different from the wave range, if so, update it
+            if (wave.min() < self.window[0]) or (wave.max() > self.window[1]):
+                wave = np.arange(self.window[0], self.window[1] + 0.01, 0.01, dtype=float)
+            if (wave.min() > self.window[0]) or (wave.max() < self.window[1]):
+                wave = np.arange(self.window[0], self.window[1] + 0.01, 0.01, dtype=float)
+            self.model_wave = wave
         spec_total = np.zeros_like(wave, dtype=float)
 
         for iso, df_trans in trans_by_iso.items():
