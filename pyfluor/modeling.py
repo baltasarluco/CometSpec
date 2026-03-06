@@ -1550,8 +1550,8 @@ def mcmc_fitting(
     model_p84 = p84_m
 
     param_labels = {
-        "logN": r"log(N/[mol cm$^{-2}$])",
-        "logQ": r"log(Q/[s$^{-1}$])",
+        "logN": r"$\log_{10}(N$ / [mol cm$^{-2}$])",
+        "logQ": r"$\log_{10}$(Q$_{\rm{col}}$ / [s$^{-1}$])",
         "T": r"T [K]",
         "v_kms": r"$\Delta$v [km s$^{-1}$]",
         "dlam": r"$\Delta \lambda$ [Å]",
@@ -1604,7 +1604,7 @@ def mcmc_fitting(
         )
         plt.plot(x_model, median_model, label="Median Model", color="crimson", alpha=0.9)
         plt.xlabel("Wavelength [Å]")
-        plt.ylabel("Flux [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]")
+        plt.ylabel(r"F$_{\lambda}$ [erg cm$^{-2}$ s$^{-1}$  Å$^{-1}$]")
         plt.legend()
         plt.tight_layout()
         plt.savefig(f"{fig_file}_fit.pdf", dpi=300, format='pdf')
