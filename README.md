@@ -4,6 +4,11 @@ Fluorescence modeling and MCMC fitting for cometary spectra. An example of usage
 
 If you use this code, please cite the following paper: 
 
+The repo doi is: 
+
+Any doubt, suggestions, bugs, feedback, etc..., please contact me at 
+<a href="mailto:baltasarluco@uc.cl">baltasarluco@uc.cl</a>
+
 ## Install
 
 From inside the `cometspec` folder:
