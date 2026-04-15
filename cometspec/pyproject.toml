@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cometspec"
+version = "0.1.0"
+description = "Fluorescence modeling and MCMC fitting for cometary spectra."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Baltasar Luco", email = "baltasarluco@uc.cl"},
+]
+dependencies = [
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "matplotlib>=3.5",
+    "astropy>=5.0",
+    "sbpy>=0.4",
+    "emcee>=3.1",
+    "corner>=2.2",
+    "specutils>=1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/baltasarluco/cometspec"
+Source = "https://github.com/baltasarluco/cometspec"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["cometspec", "cometspec.*"]
+
+[tool.setuptools.package-data]
+"cometspec" = ["data/**/*.txt", "data/**/*.dat"]

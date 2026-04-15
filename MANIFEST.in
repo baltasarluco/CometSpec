@@ -1,6 +1,0 @@
-include LICENSE
-include README.md
-include pyproject.toml
-
-recursive-include pyfluor/data *.txt
-recursive-include pyfluor/data *.dat

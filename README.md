@@ -1,10 +1,11 @@
-# pyfluor
+# CometSpec
 
-fluorescence modeling and MCMC fitting. An example of usage can be found on WorkFlow_Example
+Fluorescence modeling and MCMC fitting for cometary spectra. An example of usage can be found in WorkFlow_Example
 
 ## Install
 
-From inside the `pyfluo` folder:
+From inside the `cometspec` folder:
 
 ```bash
 pip install .
+```
