@@ -6,7 +6,8 @@ If you use this code, please cite the following paper:
 
 The repo doi is: 
 
-Any doubt, suggestions, bugs, feedback, etc..., please contact me at <a href="mailto:baltasarluco@uc.cl">
+Any doubt, suggestions, bugs, feedback, etc..., please contact me at 
+<a href="mailto:baltasarluco@uc.cl">baltasarluco@uc.cl</a>
 
 ## Install
 
