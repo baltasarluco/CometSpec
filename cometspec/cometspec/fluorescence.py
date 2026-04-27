@@ -86,11 +86,11 @@ class FluorescenceModel:
         pumping: Any = None,
         isotopologues: Union[str, Sequence[str]] = "12C14N",
         systems: Union[str, Sequence[str], None] = None,
-        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame], Sequence[pd.DataFrame]]] = None,
         line_path: Optional[str] = None,
         lsf: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         lsf_method: Optional[str] = "Gauss",
-        A_min: float = 1e4,
+        A_min: Optional[float] = 1e4,
         a: float = 3.0,
         threads: int = 1,
         name: Optional[str] = None,
@@ -104,7 +104,8 @@ class FluorescenceModel:
         pumping_max_wave: Optional[float] = 10009.9980,
         logN: Optional[float] = 11.0,
         logN_by_iso: Optional[Dict[str, float]] = None,
-        logQ: Optional[float] = -3.0,
+        logQ: Optional[float] = None,
+        logQ_by_iso: Optional[Dict[str, float]] = None,
         T: Optional[float] = 300.0,
         v_kms: Optional[float] = 0.0,
         dlam: Optional[float] = 0.0,
@@ -113,7 +114,6 @@ class FluorescenceModel:
         error_col: str = "ERR_STACK",
         continuum_col: str = "CONTINUUM",
         omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,
-        seeing_corrected: bool = False,
         include_rotations: bool = True,
         pumping_v_kms: float = 0.0,
         pumping_dlam_A: float = 0.0,
@@ -137,11 +137,22 @@ class FluorescenceModel:
         :param isotopologues: Isotopologue label or list of labels. Default is ``"12C14N"``.
         :type isotopologues: str or Sequence[str]
         :param systems: CN system selector(s) forwarded to
-            :func:`modeling.load_default_cn_transitions`. Default is ``None``.
+            :func:`modeling.load_default_transitions`. Default is ``None``.
         :type systems: str or Sequence[str] or None
-        :param linelists: Optional normalized line list(s). If ``None``, packaged defaults
-            are loaded. Default is ``None``.
-        :type linelists: pandas.DataFrame or dict[str, pandas.DataFrame] or None
+        :param linelists: Optional normalized line list(s). Accepted forms:
+
+            * ``None`` -> every isotopologue loaded from packaged defaults.
+            * Single :class:`pandas.DataFrame` -> assigned to the first isotopologue;
+              the remaining isotopologues fall back to packaged defaults.
+            * :class:`dict` mapping iso label to DataFrame -> isotopologues missing
+              from the dict fall back to defaults; extra keys are ignored.
+            * Sequence of DataFrames -> positionally paired with the first
+              ``len(linelists)`` isotopologues; the remainder fall back to defaults.
+
+            Loading a default for an unsupported isotopologue label (e.g.
+            ``"COH"``) raises ``ValueError``. Default is ``None``.
+        :type linelists: pandas.DataFrame or dict[str, pandas.DataFrame] or
+            Sequence[pandas.DataFrame] or None
         :param line_path: Optional custom path for single-isotopologue line list loading.
             Default is ``None``.
         :type line_path: str or None
@@ -194,8 +205,13 @@ class FluorescenceModel:
             Default is ``None``.
         :type logN_by_iso: dict[str, float] or None
         :param logQ: Collisional production-rate proxy (log10 scale) default fallback.
-            Default is ``-3.0``. Q in s^-1 
+            Default is ``-3.0``. Q in s^-1
         :type logQ: float or None
+        :param logQ_by_iso: Optional per-isotopologue ``log10(Q/s^-1)`` map.
+            When provided, each isotopologue uses its own collisional rate; any
+            isotopologue missing from the map falls back to ``logQ``. Default is
+            ``None``.
+        :type logQ_by_iso: dict[str, float] or None
         :param T: Temperature in Kelvin used in synthesis/fallback behavior, see paper for meaning.
             Default is ``300.0``.
         :type T: float or None
@@ -216,9 +232,7 @@ class FluorescenceModel:
         :param omega: Aperture solid angle in sr. Default is
             ``np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2``, which assumes a circular apperture of radius 0.5".
         :type omega: float
-        :param seeing_corrected: Indicates whether slit-loss uncertainty was already applied.
-            Default is ``False``.
-        :type seeing_corrected: bool
+        :type logN_seeing_corrected: bool
         :param include_rotations: Enable rotational collisions in synthesis/fitting.
             Default is ``True``.
         :type include_rotations: bool
@@ -241,7 +255,6 @@ class FluorescenceModel:
         self.flux_col = flux_col
         self.error_col = error_col
         self.continuum_col = continuum_col
-        self.seeing_corrected = seeing_corrected
         self.omega = omega
         self.include_rotations = include_rotations
         
@@ -267,6 +280,7 @@ class FluorescenceModel:
         self.logN = logN
         self.logN_by_iso = dict(logN_by_iso) if logN_by_iso is not None else None
         self.logQ = logQ
+        self.logQ_by_iso = dict(logQ_by_iso) if logQ_by_iso is not None else None
         self.T = T
         self.v_kms = v_kms
         self.dlam = dlam
@@ -274,6 +288,8 @@ class FluorescenceModel:
         # NEW: derived quantities (production rate and its uncertainty)
         self.q: Optional[Union[float, Dict[str, float]]] = None
         self.q_err: Optional[Union[float, Dict[str, float]]] = None
+        self.logN_err: Optional[Union[float, Dict[str, float]]] = None
+        self.logN_err_by_iso: Optional[Dict[str, float]] = None
 
         # --- LSF setup ---
         if lsf is not None:
@@ -337,6 +353,10 @@ class FluorescenceModel:
                 self.ratio = None
             else:
                 raise ValueError(f"Unsupported lsf_method: {lsf_method}")
+
+        # bools for slit loss
+        self.q_seeing_corrected: bool = False
+        self.logN_seeing_corrected: bool = False
 
         # --- Fit-related containers ---
         self.priors: Dict[str, Tuple[float, float]] = {}
@@ -476,7 +496,7 @@ class FluorescenceModel:
         pumping: Any = None,
         isotopologues: Union[str, Sequence[str], None] = None,
         systems: Union[str, Sequence[str], None] = None,
-        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame], Sequence[pd.DataFrame]]] = None,
         nwalkers: int = 20,
         nsteps: int = 1000,
         priors: Optional[Dict[str, Tuple[float, float]]] = None,
@@ -490,6 +510,7 @@ class FluorescenceModel:
         fig_file: str = "mcmc_fit",
         verbose: bool = True,
         pruning: bool = True,
+        N_Model: Optional[int] = 20000,
     ) -> Dict[str, Any]:
         """Run MCMC using the current model state.
 
@@ -542,6 +563,8 @@ class FluorescenceModel:
         :type verbose: bool
         :param pruning: Enable posterior pruning in modeling fitter. Default is ``True``.
         :type pruning: bool
+        :param N_Model: Number of elements in the model grid. Default is ``20000``.
+        :type N_Model: int
         :returns: Fit result dictionary from :func:`modeling.mcmc_fitting`.
         :rtype: dict[str, Any]
         :raises ValueError: If no data/pumping/window are available.
@@ -614,10 +637,20 @@ class FluorescenceModel:
         # Canonical fallback bridge:
         # If priors do not sample a parameter, pass instance defaults to
         # modeling.mcmc_fitting so this wrapper remains the source of truth.
-        init_logQ = float(self.logQ) if self.logQ is not None else -3.0
+        init_logQ = float(self.logQ) if self.logQ is not None else None
         init_T = float(self.T) if self.T is not None else 300.0
         init_v_kms = float(self.v_kms) if self.v_kms is not None else 0.0
         init_dlam = float(self.dlam) if self.dlam is not None else 0.0
+        init_logQ_by_iso = dict(self.logQ_by_iso) if self.logQ_by_iso is not None else None
+        _init_logN_by_iso = dict(self.logN_by_iso) if self.logN_by_iso is not None else None
+        init_logN = float(self.logN) if self.logN is not None else 11.0
+        init_sigma = float(self.sigma) if self.sigma is not None else None
+        init_sigma1 = float(self.sigma1) if self.sigma1 is not None else None
+        init_sigma2 = float(self.sigma2) if self.sigma2 is not None else None
+        init_sigma_G = float(self.sigma_G) if self.sigma_G is not None else None
+        init_fwhm_L = float(self.fwhm_L) if self.fwhm_L is not None else None
+        init_ratio = float(self.ratio) if self.ratio is not None else None
+
 
         # Pumping-shift bridge:
         # These settings control J_nu sampling and are intentionally independent
@@ -642,16 +675,25 @@ class FluorescenceModel:
             A_min=float(A_min),
             a=float(a),
             threads=int(threads),
-
+            
             # ✅ Pumping shift (affects J_nu → line ratios)
             velocity_kms=pumping_v_kms,
             delta_lambda_A=pumping_dlam_A,
 
             # ✅ Fallbacks if not fit
+            init_logQ_by_iso=init_logQ_by_iso,
             init_logQ=init_logQ,
             init_T=init_T,
             init_v_kms=init_v_kms,
             init_dlam=init_dlam,
+            init_logN_by_iso=_init_logN_by_iso,
+            init_logN=init_logN,
+            init_sigma=init_sigma,
+            init_sigma1=init_sigma1,
+            init_sigma2=init_sigma2,
+            init_sigma_G=init_sigma_G,
+            init_fwhm_L=init_fwhm_L,
+            init_ratio=init_ratio,
 
             fig_file=fig_file,
             wave_col=self.wave_col,
@@ -662,8 +704,10 @@ class FluorescenceModel:
             verbose=verbose,
             pruning=pruning,
             include_rotations=self.include_rotations,
+            N_Model=N_Model,
         )
 
+        
         self._update_from_result(result, used_lsf=lsf, used_lsf_method=lsf_method)
 
         # ✅ Ensure wrapper synthesis uses the same pumping shift used by the fit
@@ -681,7 +725,7 @@ class FluorescenceModel:
         *,
         isotopologues: Union[str, Sequence[str], None] = None,
         systems: Union[str, Sequence[str], None] = None,
-        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame]]] = None,
+        linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame], Sequence[pd.DataFrame]]] = None,
         logN: Optional[float] = None,
         logN_by_iso: Optional[Dict[str, float]] = None,
         logQ: Optional[float] = None,
@@ -707,6 +751,7 @@ class FluorescenceModel:
         error_col: str = None,
         continuum_col: str = None,
         omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,       
+        N_Model: int = 20000,
     ) -> None:
         """Update instance parameters and re-synthesize the model.
 
@@ -920,28 +965,26 @@ class FluorescenceModel:
 
         iso_list = self._iso_list()
 
-        # 1) transitions
-        if self.linelists is None:
-            line_paths = None
-            if self.line_path is not None:
-                line_paths = {iso_list[0]: self.line_path}
+        # 1) transitions: user-provided isos win; the rest fall back to defaults.
+        line_paths = None
+        if self.line_path is not None and iso_list:
+            line_paths = {iso_list[0]: self.line_path}
 
-            trans_by_iso = modeling.load_default_cn_transitions(
-                isotopologues=iso_list,
-                systems=self.systems,
-                A_min=self.A_min,
-                lambda_min_A=float(self.pumping_min_wave),
-                lambda_max_A=float(self.pumping_max_wave),
-                use_omega_labels=False,
-                line_paths=line_paths,
-            )
-        else:
-            if isinstance(self.linelists, pd.DataFrame):
-                if len(iso_list) != 1:
-                    raise ValueError("If linelists is a single DataFrame, isotopologues must be a single iso.")
-                trans_by_iso = {iso_list[0]: self.linelists}
-            else:
-                trans_by_iso = {iso: self.linelists[iso] for iso in iso_list}
+        trans_by_iso = modeling.resolve_linelists_with_defaults(
+            self.linelists,
+            iso_list,
+            systems=self.systems,
+            A_min=self.A_min,
+            lambda_min_A=float(self.pumping_min_wave),
+            lambda_max_A=float(self.pumping_max_wave),
+            use_omega_labels=False,
+            line_paths=line_paths,
+        )
+        if self.linelists is not None and self.A_min is not None:
+            trans_by_iso = {
+                iso: df[df["A_ul"] >= self.A_min].reset_index(drop=True)
+                for iso, df in trans_by_iso.items()
+            }
 
         # 2) per-iso solve + sum spectrum
         lines_by_iso: Dict[str, Any] = {}
@@ -990,20 +1033,37 @@ class FluorescenceModel:
             )
 
             if self.include_rotations:
-                coll_scaf = modeling.precompute_cn_collision_scaffold_fast(lines_out, idx_to_level)
+                coll_scaf = modeling.precompute_cn_collision_scaffold_fast(
+                    lines_out, idx_to_level, iso_name=iso,
+                )
             else:
                 coll_scaf = dict(iu=np.array([], int), il=np.array([], int),
                                 gu=np.array([]), gl=np.array([]), dE=np.array([]))
 
             M = M_rad.copy()
-
+            if len(iso_list) == 1:
             # ✅ Collisions only if logQ/T are defined and include_rotations
-            if self.logQ is not None and self.T is not None and self.include_rotations:
-                Q_lin = 10.0 ** float(self.logQ)
-                if np.isfinite(Q_lin) and Q_lin > 0.0:
-                    Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
-                    modeling.apply_collisions_inplace_fast(M, coll_scaf, Q=Q_lin, T=float(self.T), Cup_work=Cup_work)
+                if self.logQ is not None and self.T is not None and self.include_rotations:
+                    Q_lin = 10.0 ** float(self.logQ)
+                    if np.isfinite(Q_lin) and Q_lin > 0.0:
+                        Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
+                        modeling.apply_collisions_inplace_fast(M, coll_scaf, Q=Q_lin, T=float(self.T), Cup_work=Cup_work)
+            else:
+                # multi-iso: only apply collisions if logQ_by_iso is defined for this iso
+                logQ_i = None
+                if self.logQ_by_iso is not None and iso in self.logQ_by_iso:
+                    try:
+                        logQ_i = float(self.logQ_by_iso[iso])
+                    except TypeError:
+                        pass  # logQ is not a valid float, so we skip collisions for this iso
+                elif self.logQ is not None:
+                    logQ_i = float(self.logQ)
 
+                if logQ_i is not None:
+                    Q_lin = 10.0 ** logQ_i
+                    if np.isfinite(Q_lin) and Q_lin > 0.0 and self.include_rotations:
+                        Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
+                        modeling.apply_collisions_inplace_fast(M, coll_scaf, Q=Q_lin, T=float(self.T), Cup_work=Cup_work)
             n = modeling.solve_with_normalization(M, verbose=False)
             g_ph, g_en, g_ph_sum, g_en_sum = modeling.g_factors(lines_out, n, A_col="A_ul")
 
@@ -1081,6 +1141,66 @@ class FluorescenceModel:
 
 
     # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+    def n_lines(self) -> Union[int, Dict[str, int]]:
+        """Print and return the number of transitions in the synthesized model.
+
+        For a single isotopologue, prints and returns a single integer. For
+        multiple isotopologues, prints one count per isotopologue plus the total
+        and returns a ``{iso: count}`` dict.
+
+        :raises RuntimeError: If the model has not been synthesized yet (i.e.
+            :meth:`_synthesize_model` has not run, so ``lines_by_iso`` is unset).
+        :returns: Line count per isotopologue, or a single int for one iso.
+        :rtype: int or dict[str, int]
+        """
+        lbi = getattr(self, "lines_by_iso", None)
+        if not lbi:
+            raise RuntimeError(
+                "No synthesized lines available. Run update_model()/fit_mcmc() first."
+            )
+
+        counts = {iso: int(len(lines)) for iso, lines in lbi.items()}
+        if len(counts) == 1:
+            iso, n = next(iter(counts.items()))
+            print(f"{iso}: {n} lines")
+            return n
+
+        width = max(len(iso) for iso in counts)
+        for iso, n in counts.items():
+            print(f"{iso:<{width}} : {n} lines")
+        print(f"{'total':<{width}} : {sum(counts.values())} lines")
+        return counts
+
+    def print_linelist_origins(self) -> Dict[str, str]:
+        """Print and return the source of each isotopologue's line list.
+
+        For each isotopologue, prints either ``"custom (user-provided)"`` (when
+        the line list came from the ``linelists`` argument) or the file path
+        that would be / was loaded from the packaged defaults. Resolution
+        mirrors :meth:`_synthesize_model`, so this can be called before or
+        after synthesis.
+
+        :returns: ``{iso: origin}`` ordered as ``self.isotopologues``.
+        :rtype: dict[str, str]
+        """
+        iso_list = self._iso_list()
+        line_paths = None
+        if self.line_path is not None and iso_list:
+            line_paths = {iso_list[0]: self.line_path}
+
+        origins = modeling.linelist_origins(
+            self.linelists, iso_list, line_paths=line_paths
+        )
+
+        width = max(len(iso) for iso in origins)
+        for iso, src in origins.items():
+            print(f"{iso:<{width}} : {src}")
+        return origins
+
+
+    # ------------------------------------------------------------------
     # Internal: apply MCMC result (ONLY ADD: q/q_err reset if logN changed)
     # ------------------------------------------------------------------
     def _update_from_result(
@@ -1118,18 +1238,31 @@ class FluorescenceModel:
         self.samples_pruned = result.get("samples_pruned")
         self.lnprob_pruned = result.get("lnprob_pruned")
 
+        self.q_seeing_corrected = False
+        self.logN_seeing_corrected = False
+        
         for name in ("logN", "logQ", "T", "v_kms", "dlam"):
             if name in self.median_params:
                 setattr(self, name, float(self.median_params[name]))
+                if name == "logN":
+                    self.logN_err = np.array((
+                        float(self.up_errors_params.get(name, 0.0)),
+                        float(self.low_errors_params.get(name, 0.0)),
+                    ))
 
         iso_list = self._iso_list()
         any_isoN = any((f"logN_{iso}" in self.median_params) for iso in iso_list)
         if any_isoN:
             self.logN_by_iso = {}
+            self.logN_err_by_iso = {}
             for iso in iso_list:
                 key = f"logN_{iso}"
                 if key in self.median_params:
                     self.logN_by_iso[iso] = float(self.median_params[key])
+                    self.logN_err_by_iso[iso] = np.array((
+                        float(self.up_errors_params.get(key, 0.0)),
+                        float(self.low_errors_params.get(key, 0.0)),
+                    ))
 
         # LSF update (same as your current)
         if used_lsf is not None:
@@ -1173,7 +1306,7 @@ class FluorescenceModel:
         logN_keys = {"logN"} | {f"logN_{iso}" for iso in iso_list}
         if any(k in self.median_params for k in logN_keys):
             self.q = None
-            self.q_err = None
+            self.q_err = 0
         
         for i in iso_list:
             non_iso_list = [j for j in iso_list if j != i]
@@ -1189,7 +1322,7 @@ class FluorescenceModel:
                 linelists=self.linelists,
                 line_path=self.line_path,
                 logN=params_per_iso.get(f"logN_{i}", self.logN),
-                logQ=params_per_iso.get("logQ", self.logQ),
+                logQ=params_per_iso.get(f"logQ_{i}", self.logQ),
                 T=params_per_iso.get("T", self.T),
                 v_kms=params_per_iso.get("v_kms", self.v_kms),
                 dlam=params_per_iso.get("dlam", self.dlam),
@@ -1326,7 +1459,7 @@ class FluorescenceModel:
 
             # total molecules in coma (Haser fraction correction)
             N_tot = N_ap / frac
-
+  
             # production rate
             tau = daughter_lifetime_s.to(u.s)
             Q = (N_tot / tau).to(1 / u.s)  # molecules/s (dimensionally 1/s)
@@ -1374,93 +1507,311 @@ class FluorescenceModel:
         *,
         lambda_nm: float,
         aperture: dict,
+        correct: str = "both",  # "q", "logN", or "both"
         eps_min_arcsec_500: float = 0.7,
         eps_max_arcsec_500: float = 1.2,
         zmin_deg: float = 45.0,
         zmax_deg: float = 45.0,
         n_points: int = 2000,
     ) -> Union[float, Dict[str, float]]:
-        """Add seeing/slit-loss systematic uncertainty to existing ``q_err``.
+        """Add seeing/slit-loss systematic uncertainty to ``q_err``, ``logN_err``, or both.
 
-        This method must be called after :meth:`compute_production_rate`, because
-        it requires existing ``self.q`` and ``self.q_err`` values.
+            This method can be called after :meth:`compute_production_rate` (for ``correct="q"``
+            or ``correct="both"``) or after fitting (for ``correct="logN"``). Each quantity
+            tracks its own correction state, so they can be corrected independently or together.
 
-        :param lambda_nm: Wavelength in nm used for seeing scaling.
-        :type lambda_nm: float
-        :param aperture: Aperture geometry definition dictionary.
-        :type aperture: dict
-        :param eps_min_arcsec_500: Minimum seeing FWHM at 500 nm in arcsec.
-            Default is ``0.7``.
-        :type eps_min_arcsec_500: float
-        :param eps_max_arcsec_500: Maximum seeing FWHM at 500 nm in arcsec.
-            Default is ``1.2``.
-        :type eps_max_arcsec_500: float
-        :param zmin_deg: Minimum zenith distance in degrees. Default is ``45.0``.
-        :type zmin_deg: float
-        :param zmax_deg: Maximum zenith distance in degrees. Default is ``45.0``.
-        :type zmax_deg: float
-        :param n_points: Number of Monte Carlo/evaluation points.
-            Default is ``2000``.
-        :type n_points: int
-        :returns: Updated uncertainty as a float (single isotopologue) or
-            ``dict[str, float]`` (multi-isotopologue).
-        :rtype: float or dict[str, float]
-        :raises ValueError: If ``self.q``/``self.q_err`` are not available or have
-            invalid type for isotopologue mode.
-        :raises KeyError: If an isotopologue is missing from ``self.q``/``self.q_err`` maps.
+            The final error is teh quadrature sum of the original error and a slit-loss error. 
+            For details check the paper
 
-        Side effects:
-        Updates ``self.q_err`` and sets ``self.seeing_corrected = True``.
-        """
-        if self.q is None or self.q_err is None:
-            raise ValueError("self.q and self.q_err must be set before calling add_slit_loss_error().")
-        if self.seeing_corrected:
-            print('It was already corrected, there is no need to apply it again.')
-            return self.q_err
+
+            :param lambda_nm: Wavelength in nm used for seeing scaling.
+            :type lambda_nm: float
+            :param aperture: Aperture geometry definition dictionary. Same format as
+                :meth:`compute_production_rate`.
+            :type aperture: dict
+            :param correct: Which quantity to correct. One of ``"q"`` (default),
+                ``"logN"``, or ``"both"``. Note that ``"q"`` requires ``self.q`` and
+                ``self.q_err`` to be set; ``"logN"`` requires ``self.logN`` and
+                ``self.logN_err`` to be set.
+            :type correct: str
+            :param eps_min_arcsec_500: Minimum seeing FWHM at 500 nm and zenith, in arcsec.
+                Default is ``0.7``.
+            :type eps_min_arcsec_500: float
+            :param eps_max_arcsec_500: Maximum seeing FWHM at 500 nm and zenith, in arcsec.
+                Default is ``1.2``.
+            :type eps_max_arcsec_500: float
+            :param zmin_deg: Minimum (best) zenith angle during observations, in degrees.
+                Default is ``45.0``.
+            :type zmin_deg: float
+            :param zmax_deg: Maximum (worst) zenith angle during observations, in degrees.
+                Default is ``45.0``.
+            :type zmax_deg: float
+            :param n_points: Number of wavelength points used to sample the narrow window
+                around ``lambda_nm``. Must be >= 2. Default is ``2000``.
+            :type n_points: int
+            :raises ValueError: If ``correct`` is not one of ``"q"``, ``"logN"``, ``"both"``;
+                or if the required attributes (``self.q``, ``self.q_err``, ``self.logN``,
+                ``self.logN_err``) are not set for the requested correction.
+            :raises KeyError: If an isotopologue key is missing from ``self.q``,
+                ``self.q_err``, ``self.logN_by_iso``, or ``self.logN_err_by_iso``.
+
+            Side effects:
+                - Updates ``self.q_err`` / ``self.q_err_by_iso`` and sets
+                ``self.q_seeing_corrected = True`` when correcting ``q``.
+                - Updates ``self.logN_err`` / ``self.logN_err_by_iso`` and sets
+                ``self.logN_seeing_corrected = True`` when correcting ``logN``.
+                - If a quantity was already corrected, prints a warning and skips it
+                without raising an error.
+            """
+        if correct not in ("q", "logN", "both"):
+            raise ValueError("correct must be 'q', 'logN', or 'both'.")
+
+        do_q    = correct in ("q", "both")
+        do_logN = correct in ("logN", "both")
+
+        if do_q and (self.q is None or self.q_err is None):
+            raise ValueError("self.q and self.q_err must be set before correcting q. Recomended to fit first or set it manually to 0")
+        if do_logN and (self.logN is None or self.logN_err is None) and (self.logN_by_iso is None or self.logN_err_by_iso is None):
+            raise ValueError("self.logN and self.logN_err must be set before correcting logN.")
+        if do_q and self.q_seeing_corrected:
+            print('q was already corrected, skipping.')
+            do_q = False
+        if do_logN and self.logN_seeing_corrected:
+            print('logN was already corrected, skipping.')
+            do_logN = False
+
+        if not do_q and not do_logN:
+            return
+
+        _slitloss_kwargs = dict(
+            lambda_nm=float(lambda_nm),
+            aperture=aperture,
+            eps_min_arcsec_500=float(eps_min_arcsec_500),
+            eps_max_arcsec_500=float(eps_max_arcsec_500),
+            zmin_deg=float(zmin_deg),
+            zmax_deg=float(zmax_deg),
+            n_points=int(n_points),
+        )
+
         iso_list = self._iso_list()
 
         if len(iso_list) == 1:
-            q = float(self.q)  # log10(Q)
-            qerr = float(self.q_err)
-            new_err = helper.add_slit_loss_error_scalar(
-                q,
-                qerr,
-                lambda_nm=float(lambda_nm),
-                aperture=aperture,
-                eps_min_arcsec_500=float(eps_min_arcsec_500),
-                eps_max_arcsec_500=float(eps_max_arcsec_500),
-                zmin_deg=float(zmin_deg),
-                zmax_deg=float(zmax_deg),
-                n_points=int(n_points),
-            )
-            self.q_err = new_err
-            self.seeing_corrected = True
-            return new_err
+            if do_q:
+                self.q_err = helper.add_slit_loss_error_scalar(
+                    float(self.q), float(self.q_err), **_slitloss_kwargs
+                )
+                self.q_seeing_corrected = True
+            if do_logN:
+                self.logN_err = np.array([
+                    helper.add_slit_loss_error_scalar(
+                        float(self.logN), float(self.logN_err[0]), **_slitloss_kwargs
+                    ),
+                    helper.add_slit_loss_error_scalar(
+                        float(self.logN), float(self.logN_err[1]), **_slitloss_kwargs
+                    ),
+                ])
+                self.logN_seeing_corrected = True
+            return 
 
-        # multi-iso dict
+        # multi-iso
         if not isinstance(self.q, dict) or not isinstance(self.q_err, dict):
             raise ValueError("For multi-isotopologue models, self.q and self.q_err must be dicts keyed by iso.")
 
         new_errs: Dict[str, float] = {}
         for iso in iso_list:
-            if iso not in self.q or iso not in self.q_err:
-                raise KeyError(f"Missing q/q_err for iso='{iso}'.")
-            new_errs[iso] = helper.add_slit_loss_error_scalar(
-                float(self.q[iso]),
-                float(self.q_err[iso]),
-                lambda_nm=float(lambda_nm),
-                aperture=aperture,
-                eps_min_arcsec_500=float(eps_min_arcsec_500),
-                eps_max_arcsec_500=float(eps_max_arcsec_500),
-                zmin_deg=float(zmin_deg),
-                zmax_deg=float(zmax_deg),
-                n_points=int(n_points),
-            )
+            if do_q:
+                if iso not in self.q or iso not in self.q_err:
+                    raise KeyError(f"Missing q/q_err for iso='{iso}'.")
+                new_errs[iso] = helper.add_slit_loss_error_scalar(
+                    float(self.q[iso]), float(self.q_err[iso]), **_slitloss_kwargs
+                )
+            if do_logN:
+                self.logN_err_by_iso[iso] = np.array([
+                    helper.add_slit_loss_error_scalar(
+                        float(self.logN_by_iso[iso]), float(self.logN_err_by_iso[iso][0]), **_slitloss_kwargs
+                    ),
+                    helper.add_slit_loss_error_scalar(
+                        float(self.logN_by_iso[iso]), float(self.logN_err_by_iso[iso][1]), **_slitloss_kwargs
+                    ),
+                ])
 
-        self.q_err = new_errs
-        self.seeing_corrected = True
-        return new_errs
+        if do_q:
+            self.q_err = new_errs
+            self.q_seeing_corrected = True
+        if do_logN:
+            self.logN_seeing_corrected = True
+        return 
 
+    def compute_aperture_integral(
+        self,
+        *,
+        aperture: dict,
+        delta_au: float,
+    ) -> u.Quantity:
+        """Compute the geometric aperture integral **G** for a N(ρ) ∝ ρ⁻¹
+        column-density profile (pure radial outflow), such that ``Q = v * N_ap / G``.
+
+        Circular:     G = π ρ_ap / 2
+        Rectangular:  G = [L·asinh(W/L) + W·asinh(L/W)] / 2
+
+        Parameters
+        ----------
+        aperture : dict
+            Aperture geometry. Same format as :meth:`compute_production_rate`.
+        delta_au : float
+            Geocentric distance in AU (for arcsec → km conversion).
+
+        Returns
+        -------
+        astropy.units.Quantity
+            G in cm.
+
+        Raises
+        ------
+        ValueError
+            If the aperture type is unsupported.
+        """
+        km_per_arcsec = self._arcsec_to_km(delta_au=float(delta_au))
+        ap_type = aperture.get("type", "circular").lower()
+
+        if ap_type == "circular":
+            rho_ap = (float(aperture["radius_arcsec"]) * km_per_arcsec * u.km).to(u.cm)
+            return np.pi * rho_ap / 2.0
+
+        elif ap_type == "rectangular":
+            W = (float(aperture["width_arcsec"])  * km_per_arcsec * u.km).to(u.cm)
+            L = (float(aperture["length_arcsec"]) * km_per_arcsec * u.km).to(u.cm)
+            return (
+                L * np.arcsinh((W / L).to_value(""))
+                + W * np.arcsinh((L / W).to_value(""))
+            ) / 2.0
+
+        else:
+            raise ValueError(f"Unsupported aperture type '{ap_type}'.")
+   
+    def compute_production_rate_from_profile(
+        self,
+        *,
+        G: u.Quantity,
+        delta_au: float,
+        aperture: dict,
+        v_outflow_km_s: float,
+        use_samples: bool = True,
+    ) -> Union[Tuple[float, float], Dict[str, Tuple[float, float]]]:
+        """Estimate ``log10(Q)`` from a column-density profile via a pre-computed
+        aperture integral **G**.
+
+        Intended workflow::
+
+            G = model.compute_aperture_integral(
+                    aperture=aperture, delta_au=delta_au, profile="rho^-1"
+                )
+            logQ, logQ_err = model.compute_production_rate_from_profile(
+                    G=G, aperture=aperture, delta_au=delta_au,
+                    v_outflow_km_s=0.85,
+                )
+
+        For a custom profile, compute G yourself (cm) and pass it directly,
+        skipping :meth:`compute_aperture_integral` entirely::
+
+            import astropy.units as u
+            import numpy as np
+            G_custom = my_numerical_integral(...) * u.cm
+            logQ, logQ_err = model.compute_production_rate_from_profile(
+                    G=G_custom, ...
+                )
+
+        Parameters
+        ----------
+        G : astropy.units.Quantity
+            Geometric aperture integral in cm, from
+            :meth:`compute_aperture_integral` or a custom calculation.
+            Must satisfy ``Q = v * N_ap / G``.
+        delta_au : float
+            Geocentric distance in AU.
+        aperture : dict
+            Aperture geometry (needed to compute the collecting area A_cm²).
+        v_outflow_km_s : float
+            Gas outflow velocity in km/s.
+        use_samples : bool
+            If ``True``, propagates full MCMC chains; if ``False``, uses the
+            median ``logN`` only.
+
+        Returns
+        -------
+        tuple[float, float]
+            ``(logQ50, logQ_err)`` for single-isotopologue models.
+        dict[str, tuple[float, float]]
+            ``{iso: (logQ50, logQ_err)}`` for multi-isotopologue models.
+
+        Raises
+        ------
+        ValueError
+            If MCMC samples are missing and ``use_samples=True``.
+        """
+        iso_list = self._iso_list()
+        A_cm2 = self._aperture_area_cm2(aperture, delta_au=float(delta_au))
+        v = float(v_outflow_km_s) * u.km / u.s
+
+        # Validate G has the right dimension
+        try:
+            G = G.to(u.cm)
+        except u.UnitConversionError:
+            raise ValueError(f"G must be convertible to cm, got units '{G.unit}'.")
+
+        def get_logN_chain(iso: str) -> np.ndarray:
+            if self.samples_pruned is None or self.param_keys is None:
+                raise ValueError(
+                    "No MCMC samples available. Fit first or set use_samples=False."
+                )
+            pkeys = list(self.param_keys)
+            key = "logN" if len(iso_list) == 1 else f"logN_{iso}"
+            if key not in pkeys:
+                raise KeyError(f"Missing parameter '{key}' in chains. param_keys={self.param_keys}")
+            return np.asarray(self.samples_pruned[:, pkeys.index(key)], float)
+
+        def compute_from_logN(logN_vals: np.ndarray) -> Tuple[float, float]:
+            Ncol = (10.0 ** np.asarray(logN_vals, float)) / u.cm**2
+            N_ap = Ncol * A_cm2          # molecules
+            Q    = (v * N_ap / G).to(1 / u.s)
+            logQ = np.log10(Q.value)
+            p16, p50, p84 = np.percentile(logQ, [16, 50, 84])
+            return float(p50), float(0.5 * ((p84 - p50) + (p50 - p16)))
+
+        # --- single isotopologue ---
+        if len(iso_list) == 1:
+            iso = iso_list[0]
+            chain = get_logN_chain(iso) if use_samples else np.array([float(self.logN)])
+            q50, qerr = compute_from_logN(chain)
+            self.q, self.q_err = q50, qerr
+            return q50, qerr
+
+        # --- multi-isotopologue ---
+        out: Dict[str, Tuple[float, float]] = {}
+        for iso in iso_list:
+            if use_samples:
+                chain = get_logN_chain(iso)
+            else:
+                if self.logN_by_iso is None or iso not in self.logN_by_iso:
+                    raise ValueError(f"Missing logN_by_iso['{iso}'] and use_samples=False.")
+                chain = np.array([float(self.logN_by_iso[iso])])
+            out[iso] = compute_from_logN(chain)
+
+        self.q     = {k: v[0] for k, v in out.items()}
+        self.q_err = {k: v[1] for k, v in out.items()}
+        return out
+
+    # ---------------------------------------------------------------------
+    # Helper: arcsec -> km conversion at geocentric distance delta_au.
+    # Add this if it doesn't already exist in your class.
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _arcsec_to_km(*, delta_au: float) -> float:
+        """Convert 1 arcsec at geocentric distance delta_au to km at the comet."""
+        AU_KM = 1.495978707e8
+        ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
+        return float(delta_au) * AU_KM * ARCSEC_TO_RAD
+    
     # ------------------------------------------------------------------
     # Serialization: include q/q_err
     # ------------------------------------------------------------------
@@ -1475,14 +1826,13 @@ class FluorescenceModel:
         :type filename: str
         """
         had_given_lsf = (self.lsf_method == "Given")
-
         init_kwargs = dict(
             data=self.data,
             window=self.window,
             pumping=self.pumping,
             isotopologues=self.isotopologues,
             systems=self.systems,
-            linelists=None,  # do not serialize
+            linelists=self.linelists,
             line_path=self.line_path,
             lsf=None,
             lsf_method=self.lsf_method if not had_given_lsf else "Gauss",
@@ -1501,9 +1851,11 @@ class FluorescenceModel:
             logN=self.logN,
             logN_by_iso=self.logN_by_iso,
             logQ=self.logQ,
+            logQ_by_iso=self.logQ_by_iso,
             T=self.T,
             v_kms=self.v_kms,
             dlam=self.dlam,
+            include_rotations=self.include_rotations,
         )
 
         mcmc_result = dict(
@@ -1521,16 +1873,24 @@ class FluorescenceModel:
             model_by_iso=self.model_by_iso,
         )
 
-        # NEW: persist q/q_err
-        derived = dict(q=self.q, q_err=self.q_err)
+        # NEW: persist q/q_err and correction flags
+        derived = dict(
+            q=self.q,
+            q_err=self.q_err,
+            q_seeing_corrected=self.q_seeing_corrected,
+            logN_seeing_corrected=self.logN_seeing_corrected,
+            logN_err=self.logN_err,
+            logN_err_by_iso=self.logN_err_by_iso,
+        )
 
         state = {
             "class": "FluorescenceModel",
-            "version": 3,
+            "version": 4,
             "init_kwargs": init_kwargs,
             "mcmc_result": mcmc_result,
             "derived": derived,
             "had_given_lsf": had_given_lsf,
+            "linelists": self.linelists,  # explicit backup in case init_kwargs is from older format
         }
 
         with open(filename, "wb") as f:
@@ -1558,26 +1918,38 @@ class FluorescenceModel:
         if state.get("class") != "FluorescenceModel":
             raise ValueError("File does not contain a FluorescenceModel state.")
         version = state.get("version", 1)
-        if version not in (1, 2, 3):
+        if version not in (1, 2, 3, 4):
             raise ValueError("Unsupported FluorescenceModel state version.")
 
         init_kwargs = state["init_kwargs"]
+
+        # If linelists was saved as a top-level key (version 4+), use it to
+        # patch init_kwargs in case it was missing or None there (e.g. old pickles).
+        if state.get("linelists") is not None and init_kwargs.get("linelists") is None:
+            init_kwargs["linelists"] = state["linelists"]
+
         mcmc_result = state.get("mcmc_result") or {}
         derived = state.get("derived") or {}
         had_given_lsf = state.get("had_given_lsf", False)
 
         obj = cls(**init_kwargs)
 
-        if any(mcmc_result.values()):
+        if any(v is not None for v in mcmc_result.values()):
             obj._update_from_result(
                 mcmc_result,
                 used_lsf=None,
                 used_lsf_method=init_kwargs.get("lsf_method"),
             )
 
-        # NEW: restore q/q_err
+        # NEW: restore q/q_err, correction flags, and logN errors
         obj.q = derived.get("q", None)
         obj.q_err = derived.get("q_err", None)
+        obj.q_seeing_corrected = derived.get("q_seeing_corrected", False)
+        obj.logN_seeing_corrected = derived.get("logN_seeing_corrected", False)
+        if derived.get("logN_err") is not None:
+            obj.logN_err = derived["logN_err"]
+        if derived.get("logN_err_by_iso") is not None:
+            obj.logN_err_by_iso = derived["logN_err_by_iso"]
 
         if had_given_lsf:
             print(
@@ -1585,3 +1957,6 @@ class FluorescenceModel:
                 "was not serialized. Call `obj.update_model(lsf=...)` to restore it."
             )
         return obj
+    
+
+    

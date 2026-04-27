@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 
 """
 Core fluorescence modeling.
@@ -33,6 +34,8 @@ C) ΔE meaning:
 """
 
 from typing import Dict, Tuple, Sequence, Optional, Callable, Any, Union, Mapping
+
+import re
 
 import numpy as np
 import pandas as pd
@@ -177,6 +180,47 @@ def from_user_linelist(
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
+    lam_s = pd.to_numeric(df[lam_col], errors="coerce")
+    A_s = pd.to_numeric(df[A_col], errors="coerce")
+    gu_s = pd.to_numeric(df[g_upper_col], errors="coerce")
+    gl_s = pd.to_numeric(df[g_lower_col], errors="coerce")
+    uid_s = df[upper_id_col]
+    lid_s = df[lower_id_col]
+
+    valid = (
+        np.isfinite(lam_s) & (lam_s > 0)
+        & np.isfinite(A_s) & (A_s >= 0)
+        & np.isfinite(gu_s) & (gu_s > 0)
+        & np.isfinite(gl_s) & (gl_s > 0)
+        & uid_s.notna() & lid_s.notna()
+    )
+
+    opt_specs: list[tuple[str, str, bool]] = [
+        (lower_es_col, "lower_es_col", False),
+        (lower_v_col, "lower_v_col", True),
+        (lower_J_col, "lower_J_col", True),
+        (lower_sym_col, "lower_sym_col", False),
+        (E_lower_cm1_col, "E_lower_cm1_col", True),
+    ]
+    for col, label, numeric in opt_specs:
+        if col is None:
+            continue
+        if col not in df.columns:
+            raise ValueError(f"{label}={col!r} not found.")
+        if numeric:
+            valid = valid & np.isfinite(pd.to_numeric(df[col], errors="coerce"))
+        else:
+            valid = valid & df[col].notna()
+
+    valid = valid.to_numpy()
+    n_dropped = int((~valid).sum())
+    if n_dropped > 0:
+        warnings.warn(
+            f"from_user_linelist: dropping {n_dropped} row(s) with missing/invalid values."
+        )
+
+    df = df.iloc[valid].reset_index(drop=True)
+
     out = pd.DataFrame(index=df.index)
     out["lambda_vac_A"] = pd.to_numeric(df[lam_col], errors="coerce").astype(float)
     out["A_ul"] = pd.to_numeric(df[A_col], errors="coerce").astype(float)
@@ -186,41 +230,17 @@ def from_user_linelist(
     out["g_lower"] = pd.to_numeric(df[g_lower_col], errors="coerce").astype(float)
 
     lam_cm = out["lambda_vac_A"].to_numpy() * 1e-8
-    if np.any(~np.isfinite(lam_cm)) or np.any(lam_cm <= 0.0):
-        raise ValueError("Invalid lambda values (must be finite, >0).")
     out["E_cm1"] = 1.0 / lam_cm
 
-    if np.any(~np.isfinite(out["A_ul"])) or np.any(out["A_ul"] < 0.0):
-        raise ValueError("Invalid A_ul values.")
-    if np.any(~np.isfinite(out["g_upper"])) or np.any(out["g_upper"] <= 0.0):
-        raise ValueError("Invalid g_upper values.")
-    if np.any(~np.isfinite(out["g_lower"])) or np.any(out["g_lower"] <= 0.0):
-        raise ValueError("Invalid g_lower values.")
-
-    # Optional columns for collisions
     if lower_es_col is not None:
-        if lower_es_col not in df.columns:
-            raise ValueError(f"lower_es_col={lower_es_col!r} not found.")
         out["lower_es"] = df[lower_es_col].astype(str).str.strip().str.upper()
-
     if lower_v_col is not None:
-        if lower_v_col not in df.columns:
-            raise ValueError(f"lower_v_col={lower_v_col!r} not found.")
         out["lower_v"] = pd.to_numeric(df[lower_v_col], errors="coerce").astype(float)
-
     if lower_J_col is not None:
-        if lower_J_col not in df.columns:
-            raise ValueError(f"lower_J_col={lower_J_col!r} not found.")
         out["lower_J"] = pd.to_numeric(df[lower_J_col], errors="coerce").astype(float)
-
     if lower_sym_col is not None:
-        if lower_sym_col not in df.columns:
-            raise ValueError(f"lower_sym_col={lower_sym_col!r} not found.")
         out["lower_sym"] = df[lower_sym_col].astype(str).str.strip()
-
     if E_lower_cm1_col is not None:
-        if E_lower_cm1_col not in df.columns:
-            raise ValueError(f"E_lower_cm1_col={E_lower_cm1_col!r} not found.")
         out["E_lower_cm1"] = pd.to_numeric(df[E_lower_cm1_col], errors="coerce").astype(float)
 
     return out
@@ -282,12 +302,53 @@ def from_cn_brooke(
     :rtype: pandas.DataFrame
     :raises ValueError: If required columns are missing or contain invalid values.
     """
-    out = pd.DataFrame(index=df.index)
+    src_cols = [
+        lam_col, A_col,
+        "F'", "p'", "eS'", "v'", "J'",
+        "F''", "p''", "eS''", "v''", "J''",
+        E_lower_col,
+    ]
+    missing = [c for c in src_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Brooke linelist missing required columns: {missing}")
 
+    lam_s = pd.to_numeric(df[lam_col], errors="coerce")
+    A_s = pd.to_numeric(df[A_col], errors="coerce")
+    Vu_s = pd.to_numeric(df["v'"], errors="coerce")
+    Vl_s = pd.to_numeric(df["v''"], errors="coerce")
+    Ju_s = pd.to_numeric(df["J'"], errors="coerce")
+    Jl_s = pd.to_numeric(df["J''"], errors="coerce")
+    El_s = pd.to_numeric(df[E_lower_col], errors="coerce")
+
+    valid = (
+        np.isfinite(lam_s) & (lam_s > 0)
+        & np.isfinite(A_s) & (A_s >= 0)
+        & np.isfinite(Vu_s) & np.isfinite(Vl_s)
+        & np.isfinite(Ju_s) & np.isfinite(Jl_s)
+        & np.isfinite(El_s)
+        & df["F'"].notna() & df["p'"].notna() & df["eS'"].notna()
+        & df["F''"].notna() & df["p''"].notna() & df["eS''"].notna()
+    ).to_numpy()
+
+    n_dropped = int((~valid).sum())
+    if n_dropped > 0:
+        warnings.warn(
+            f"from_cn_brooke: dropping {n_dropped} row(s) with missing/invalid values."
+        )
+
+    if not valid.any():
+        return pd.DataFrame(columns=[
+            "lambda_vac_A", "A_ul", "upper_id", "lower_id",
+            "g_upper", "g_lower", "E_cm1",
+            "lower_es", "lower_v", "lower_J", "lower_sym", "E_lower_cm1",
+        ])
+
+    df = df.iloc[valid].reset_index(drop=True)
+
+    out = pd.DataFrame(index=df.index)
     out["lambda_vac_A"] = pd.to_numeric(df[lam_col], errors="coerce").astype(float)
     out["A_ul"] = pd.to_numeric(df[A_col], errors="coerce").astype(float)
 
-    # Build symmetry labels using the existing CN mapping logic.
     sym_u = [
         make_sym(F, p, use_omega_labels, es)
         for F, p, es in zip(df["F'"], df["p'"], df["eS'"])
@@ -299,53 +360,30 @@ def from_cn_brooke(
 
     J_u = pd.to_numeric(df["J'"], errors="coerce").astype(float)
     J_l = pd.to_numeric(df["J''"], errors="coerce").astype(float)
+    V_u = pd.to_numeric(df["v'"], errors="coerce").astype(float)
+    V_l = pd.to_numeric(df["v''"], errors="coerce").astype(float)
 
-    # IDs can remain Brooke-style because collisions use explicit lower-state columns.
     out["upper_id"] = [
         f"{str(es).strip().upper()}|v={int(round(v))}|J={J:.6g}|sym={s}"
-        for es, v, J, s in zip(df["eS'"], df["v'"], J_u, sym_u)
+        for es, v, J, s in zip(df["eS'"], V_u, J_u, sym_u)
     ]
     out["lower_id"] = [
         f"{'X' if str(es).strip().upper().startswith('X') else str(es).strip().upper()}|"
         f"v={int(round(v))}|J={J:.6g}|sym={s}"
-        for es, v, J, s in zip(df["eS''"], df["v''"], J_l, sym_l)
+        for es, v, J, s in zip(df["eS''"], V_l, J_l, sym_l)
     ]
 
     out["g_upper"] = 2.0 * J_u + 1.0
     out["g_lower"] = 2.0 * J_l + 1.0
 
-    # Photon wavenumber in cm^-1.
-    lam_cm = out["lambda_vac_A"].to_numpy() * 1e-8  # Å -> cm
-    if np.any(~np.isfinite(lam_cm)) or np.any(lam_cm <= 0.0):
-        raise ValueError("Invalid lambda_vac_A values in CN linelist.")
+    lam_cm = out["lambda_vac_A"].to_numpy() * 1e-8
     out["E_cm1"] = 1.0 / lam_cm
 
-    # Required fields when rotational collisions are enabled.
     out["lower_es"] = df["eS''"].astype(str).str.strip().str.upper()
-    out["lower_v"] = pd.to_numeric(df["v''"], errors="coerce").astype(float)
+    out["lower_v"] = V_l
     out["lower_J"] = J_l
     out["lower_sym"] = np.asarray(sym_l, dtype=str)
-
-    if E_lower_col not in df.columns:
-        raise ValueError(
-            f"Brooke dataframe is missing {E_lower_col!r}. "
-            "Needed to build E_lower_cm1 for rotational collisions."
-        )
     out["E_lower_cm1"] = pd.to_numeric(df[E_lower_col], errors="coerce").astype(float)
-
-    # Validate normalized line values.
-    if np.any(~np.isfinite(out["A_ul"])) or np.any(out["A_ul"] < 0.0):
-        raise ValueError("Invalid A_ul values in CN linelist.")
-    if np.any(~np.isfinite(out["g_upper"])) or np.any(out["g_upper"] <= 0.0):
-        raise ValueError("Invalid g_upper values in CN linelist.")
-    if np.any(~np.isfinite(out["g_lower"])) or np.any(out["g_lower"] <= 0.0):
-        raise ValueError("Invalid g_lower values in CN linelist.")
-
-    # Collision terms require finite lower-state energies.
-    bad_E = ~np.isfinite(out["E_lower_cm1"])
-    if np.any(bad_E):
-        # Keep this strict to fail early before building collision terms.
-        raise ValueError("Invalid (non-finite) E_lower_cm1 values from Brooke E'' column.")
 
     return out
 
@@ -403,7 +441,7 @@ def filter_cn_systems(
     return df.reset_index(drop=True)
 
 
-def load_default_cn_transitions(
+def load_default_transitions(
     *,
     isotopologues: str | Sequence[str] = "12C14N",
     systems: str | Sequence[str] | None = None,
@@ -445,30 +483,272 @@ def load_default_cn_transitions(
     out: dict[str, pd.DataFrame] = {}
     sys_tokens = normalize_systems_arg(systems)
     for iso in iso_list:
-        if line_paths is not None and iso in line_paths:
-            path = line_paths[iso]
-        else:
-            try:
-                path = str(helper.get_default_mol_linelist_path(isotope=iso))
-            except TypeError:
-                path = str(helper.get_default_mol_linelist_path())
+        matched = False
+        #check condition that iso is XCYN
+        if re.match(r"^\d+C\d+N$", iso):
+            matched = True
+            if line_paths is not None and iso in line_paths:
+                path = line_paths[iso]
+            else:
+                try:
+                    path = str(helper.get_default_mol_linelist_path(isotope=iso))
+                except TypeError:
+                    path = str(helper.get_default_mol_linelist_path())
 
-        df_all = helper.load_cn_linelist(path)
-        df_filt = filter_cn_systems(
-            df_all,
-            systems=sys_tokens,
+            df_all = helper.load_cn_linelist(path)
+            df_filt = filter_cn_systems(
+                df_all,
+                systems=sys_tokens,
+                lambda_min_A=lambda_min_A,
+                lambda_max_A=lambda_max_A,
+                A_min=A_min,
+                lam_col="lambda_vac_A_from_Cal",
+            )
+            out[iso] = from_cn_brooke(
+                df_filt,
+                lam_col="lambda_vac_A_from_Cal",
+                A_col="A",
+                use_omega_labels=use_omega_labels,
+            )
+        if 'Fe' in iso:
+            matched = True
+            PACKAGE_DIR = Path(__file__).resolve().parent
+            DATA_DIR = PACKAGE_DIR / "data"
+            path = DATA_DIR / 'fe_normalized.csv'
+            tab = pd.read_csv(path)
+            tab = tab[tab['A_ul'] > A_min]
+            out[iso] = _drop_invalid_normalized_rows(tab, label=iso)
+        #check if is XCYC or XCX
+        if re.match(r"^\d+C\d+C$", iso) or re.match(r"^\d+C\d+$", iso):
+            matched = True
+            KEY_LINES = "/lines"
+            PACKAGE_DIR = Path(__file__).resolve().parent
+            DATA_DIR = PACKAGE_DIR / "data"
+            canon = canonical_diatomic_name(iso) or iso
+            path = DATA_DIR / f'C2/{canon}.h5'
+            if not path.exists():
+                # Fall back to the raw label for backward compatibility.
+                path = DATA_DIR / f'C2/{iso}.h5'
+            tab = pd.read_hdf(path, key=KEY_LINES)
+            tab = tab[tab['A_ul'] > A_min]
+            out[iso] = _drop_invalid_normalized_rows(tab, label=iso)
+        if re.match(r"^\d+C\d*H$", iso) or re.match(r"^CH$", iso):
+            matched = True
+            KEY_LINES = "/lines"
+            PACKAGE_DIR = Path(__file__).resolve().parent
+            DATA_DIR = PACKAGE_DIR / "data"
+            canon = canonical_diatomic_name(iso) or iso
+            path = DATA_DIR / f'CH/{canon}.h5'
+            if not path.exists():
+                # Fall back to the raw label for backward compatibility.
+                path = DATA_DIR / f'CH/{iso}.h5'
+            tab = pd.read_hdf(path, key=KEY_LINES)
+            tab = tab[tab['A_ul'] > A_min]
+            #pass lambda_vac_A to trully the air wavelengths in the CH linelist
+            out[iso] = _drop_invalid_normalized_rows(tab, label=iso)
+        if not matched:
+            raise ValueError(
+                f"No default linelist available for isotopologue {iso!r}. "
+                "Supported defaults are CN-like labels (e.g. '12C14N'), "
+                "C2-like labels (e.g. '12C2', '12C13C'), or labels containing "
+                "'Fe'. Provide a custom linelist via the `linelists` argument."
+            )
+    return out
+
+
+def resolve_linelists_with_defaults(
+    linelists: pd.DataFrame | dict[str, pd.DataFrame] | Sequence[pd.DataFrame] | None,
+    iso_list: Sequence[str],
+    *,
+    systems: str | Sequence[str] | None = None,
+    A_min: float = 1e4,
+    lambda_min_A: float = 2990.001,
+    lambda_max_A: float = 10009.998,
+    use_omega_labels: bool = False,
+    line_paths: dict[str, str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Resolve user-supplied linelists, filling in defaults for any missing isotopologues.
+
+    Resolution rules:
+
+    - ``linelists is None`` -> every iso loaded from packaged defaults via
+      :func:`load_default_transitions`.
+    - Single :class:`pandas.DataFrame` -> assigned to ``iso_list[0]``; the
+      remaining isotopologues fall back to defaults.
+    - :class:`dict` mapping iso label to DataFrame -> entries used for matching
+      labels in ``iso_list``; any iso label not present in the dict falls back
+      to defaults. Keys not in ``iso_list`` are ignored.
+    - Sequence (``list``/``tuple``) of DataFrames -> positional pairing with the
+      first ``len(linelists)`` entries of ``iso_list``; the remainder fall back
+      to defaults.
+
+    Loading a default for an isotopologue without a packaged file (e.g. ``"COH"``)
+    raises :class:`ValueError` from :func:`load_default_transitions`.
+
+    :returns: ``{iso: DataFrame}`` ordered exactly as ``iso_list``.
+    :rtype: dict[str, pandas.DataFrame]
+    """
+    iso_list = list(iso_list)
+    if not iso_list:
+        raise ValueError("isotopologues is empty.")
+
+    user_by_iso: dict[str, pd.DataFrame] = {}
+    if linelists is None:
+        pass
+    elif isinstance(linelists, pd.DataFrame):
+        user_by_iso[iso_list[0]] = linelists
+    elif isinstance(linelists, dict):
+        for iso in iso_list:
+            if iso in linelists:
+                user_by_iso[iso] = linelists[iso]
+    elif isinstance(linelists, (list, tuple)):
+        if len(linelists) > len(iso_list):
+            raise ValueError(
+                f"Got {len(linelists)} linelists for {len(iso_list)} isotopologues; "
+                "too many."
+            )
+        for iso, df in zip(iso_list, linelists):
+            user_by_iso[iso] = df
+    else:
+        raise TypeError(
+            "linelists must be None, a DataFrame, a dict keyed by isotopologue, "
+            f"or a sequence of DataFrames; got {type(linelists).__name__}."
+        )
+
+    missing = [iso for iso in iso_list if iso not in user_by_iso]
+    if missing:
+        defaults = load_default_transitions(
+            isotopologues=missing,
+            systems=systems,
+            A_min=A_min,
             lambda_min_A=lambda_min_A,
             lambda_max_A=lambda_max_A,
-            A_min=A_min,
-            lam_col="lambda_vac_A_from_Cal",
-        )
-        out[iso] = from_cn_brooke(
-            df_filt,
-            lam_col="lambda_vac_A_from_Cal",
-            A_col="A",
             use_omega_labels=use_omega_labels,
+            line_paths=line_paths,
         )
+        for iso in missing:
+            user_by_iso[iso] = defaults[iso]
+
+    return {iso: user_by_iso[iso] for iso in iso_list}
+
+
+def default_linelist_source(iso: str) -> str:
+    """Return the file path that would be loaded for ``iso`` from packaged defaults.
+
+    :raises ValueError: If ``iso`` does not match any supported default pattern
+        (CN-like, C2-like, or containing ``"Fe"``).
+    """
+    PACKAGE_DIR = Path(__file__).resolve().parent
+    DATA_DIR = PACKAGE_DIR / "data"
+    if re.match(r"^\d+C\d+N$", iso):
+        try:
+            return str(helper.get_default_mol_linelist_path(isotope=iso))
+        except TypeError:
+            return str(helper.get_default_mol_linelist_path())
+    if 'Fe' in iso:
+        return str(DATA_DIR / 'fe_normalized.csv')
+    if re.match(r"^\d+C\d+C$", iso) or re.match(r"^\d+C\d+$", iso):
+        canon = canonical_diatomic_name(iso) or iso
+        path = DATA_DIR / f'C2/{canon}.h5'
+        if not path.exists():
+            path = DATA_DIR / f'C2/{iso}.h5'
+        return str(path)
+    raise ValueError(
+        f"No default linelist available for isotopologue {iso!r}."
+    )
+
+
+def linelist_origins(
+    linelists: pd.DataFrame | dict[str, pd.DataFrame] | Sequence[pd.DataFrame] | None,
+    iso_list: Sequence[str],
+    *,
+    line_paths: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a per-isotopologue origin string for the configured line lists.
+
+    Mirrors the resolution rules of :func:`resolve_linelists_with_defaults`:
+
+    - Entries supplied by the user (DataFrame, dict entry, or positional list
+      slot) are reported as ``"custom (user-provided)"``.
+    - Entries with an explicit override in ``line_paths`` are reported as that
+      path.
+    - Otherwise the path returned by :func:`default_linelist_source` is used.
+
+    Does not load any data.
+    """
+    iso_list = list(iso_list)
+
+    user_isos: set[str] = set()
+    if linelists is None:
+        pass
+    elif isinstance(linelists, pd.DataFrame):
+        if iso_list:
+            user_isos.add(iso_list[0])
+    elif isinstance(linelists, dict):
+        user_isos = {iso for iso in iso_list if iso in linelists}
+    elif isinstance(linelists, (list, tuple)):
+        user_isos = set(iso_list[: len(linelists)])
+    else:
+        raise TypeError(
+            "linelists must be None, a DataFrame, a dict keyed by isotopologue, "
+            f"or a sequence of DataFrames; got {type(linelists).__name__}."
+        )
+
+    out: dict[str, str] = {}
+    for iso in iso_list:
+        if iso in user_isos:
+            out[iso] = "custom (user-provided)"
+        elif line_paths is not None and iso in line_paths:
+            out[iso] = str(line_paths[iso])
+        else:
+            out[iso] = default_linelist_source(iso)
     return out
+
+
+def _drop_invalid_normalized_rows(tab: pd.DataFrame, *, label: str = "") -> pd.DataFrame:
+    """Drop rows of an already-normalized linelist that have missing/invalid values.
+
+    Numeric columns must be finite; string/id columns must be non-null. Wavelength
+    and degeneracy columns must additionally be > 0; A_ul must be >= 0. Lines that
+    fail any check are dropped (with a warning) instead of silently propagating
+    NaN into the rate matrix or the collision scaffold.
+    """
+    if tab is None or len(tab) == 0:
+        return tab.reset_index(drop=True) if tab is not None else tab
+
+    numeric_required = {
+        "lambda_vac_A": ("positive", True),
+        "A_ul": ("nonneg", True),
+        "g_upper": ("positive", False),
+        "g_lower": ("positive", False),
+        "lower_v": ("finite", False),
+        "lower_J": ("finite", False),
+        "E_lower_cm1": ("finite", False),
+    }
+    string_required = ("upper_id", "lower_id", "lower_es", "lower_sym")
+
+    valid = pd.Series(True, index=tab.index)
+    for col, (kind, _) in numeric_required.items():
+        if col not in tab.columns:
+            continue
+        s = pd.to_numeric(tab[col], errors="coerce")
+        m = np.isfinite(s)
+        if kind == "positive":
+            m = m & (s > 0)
+        elif kind == "nonneg":
+            m = m & (s >= 0)
+        valid &= m
+    for col in string_required:
+        if col in tab.columns:
+            valid &= tab[col].notna()
+
+    valid_arr = valid.to_numpy()
+    n_dropped = int((~valid_arr).sum())
+    if n_dropped > 0:
+        warnings.warn(
+            f"load_default_transitions[{label}]: dropping {n_dropped} row(s) with missing/invalid values."
+        )
+    return tab.iloc[valid_arr].reset_index(drop=True)
 
 
 # =============================================================================
@@ -513,6 +793,11 @@ def attach_pumping_and_labels(
     wave_AA = _as_array(pumping, "WAVE")
     F_vals = _as_array(pumping, "FLUX")
     F_lambda = F_vals * (u.erg / (u.s * u.cm**2 * u.AA))
+
+    # Drop lines whose (shifted) wavelength falls outside the pumping grid.
+    in_range = (lam >= wave_AA.min()) & (lam <= wave_AA.max())
+    df = df.reset_index(drop=True)[in_range]
+    lam = lam[in_range]
 
     lines = Table.from_pandas(df.copy())
 
@@ -652,6 +937,129 @@ def _empty_scaffold() -> dict:
                 gu=np.array([]), gl=np.array([]), dE=np.array([]))
 
 
+# (mass_number, element) for common astrophysical isotopes with nonzero nuclear
+# spin. Used to detect whether an isotopologue has hyperfine structure, which
+# opens rotationally-elastic (Delta J = 0) collisional channels between
+# hyperfine sublevels. Anything not in this set is assumed I=0.
+_NONZERO_SPIN_ISOTOPES: set[tuple[int, str]] = {
+    (1, "H"), (2, "H"),
+    (13, "C"),
+    (14, "N"), (15, "N"),
+    (17, "O"),
+    (19, "F"),
+    (33, "S"),
+}
+
+
+def _has_nonzero_nuclear_spin(iso_name: str | None) -> bool:
+    if iso_name is None:
+        return False
+    atoms = _parse_isotopologue_atoms(iso_name)
+    return any(a in _NONZERO_SPIN_ISOTOPES for a in atoms)
+
+
+def canonical_diatomic_name(iso_name: str | None) -> str | None:
+    """Return a canonical label for a diatomic isotopologue.
+
+    Atoms are sorted by (mass, element) so that labels like ``"13C12C"`` and
+    ``"12C13C"`` collapse to the same canonical form (``"12C13C"``). Homonuclear
+    labels with subscripts (e.g. ``"12C2"``) are preserved. If the label cannot
+    be parsed as a diatomic, it is returned unchanged.
+    """
+    if iso_name is None:
+        return None
+    atoms = _parse_isotopologue_atoms(iso_name)
+    if len(atoms) != 2:
+        return iso_name
+    (m1, e1), (m2, e2) = atoms
+    if (m1, e1) == (m2, e2):
+        # Homonuclear: keep compact "<mass><El>2" form.
+        return f"{m1}{e1}2"
+    a, b = sorted(atoms, key=lambda x: (x[0], x[1]))
+    return f"{a[0]}{a[1]}{b[0]}{b[1]}"
+
+
+def _parse_isotopologue_atoms(name: str) -> list[tuple[int, str]]:
+    """Parse an isotopologue label like ``"12C2"``, ``"12C13C"``, or ``"12C14N"`` into atoms.
+
+    :param name: Isotopologue label using ``<mass><Element>[count]`` tokens
+        (e.g., ``"12C2"`` -> two ``(12, "C")``; ``"12C13C"`` -> ``(12, "C")`` and
+        ``(13, "C")``; ``"12C14N"`` -> ``(12, "C")`` and ``(14, "N")``).
+    :type name: str
+    :returns: List of ``(mass_number, element)`` tuples. Empty if ``name`` is
+        unparseable.
+    :rtype: list[tuple[int, str]]
+    """
+    s = str(name)
+    matches = list(re.finditer(r"(\d+)([A-Z][a-z]?)", s))
+    atoms: list[tuple[int, str]] = []
+    for i, m in enumerate(matches):
+        mass = int(m.group(1))
+        elem = m.group(2)
+        # Subscript count is the digits between this match's end and the next
+        # match's start (or end of string). Avoids gobbling the next atom's mass.
+        end = m.end()
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(s)
+        count_match = re.match(r"\d+", s[end:next_start])
+        count = int(count_match.group()) if count_match else 1
+        atoms.extend([(mass, elem)] * count)
+    return atoms
+
+
+def is_homonuclear_diatomic(iso_name: str | None) -> bool:
+    """Detect whether an isotopologue label denotes a homonuclear diatomic.
+
+    Homonuclear means the same element AND the same isotope on both atoms
+    (e.g., ``"12C2"``, ``"13C2"``). The mixed-isotope ``"12C13C"`` is treated as
+    heteronuclear because the broken nuclear-permutation symmetry removes the
+    even/odd-J restriction.
+
+    :param iso_name: Isotopologue label, or ``None``.
+    :type iso_name: str or None
+    :returns: ``True`` only for diatomics with two identical ``(mass, element)``
+        atoms; ``False`` otherwise (including unparseable or non-diatomic labels).
+    :rtype: bool
+    """
+    if iso_name is None:
+        return False
+    atoms = _parse_isotopologue_atoms(iso_name)
+    if len(atoms) != 2:
+        return False
+    return atoms[0] == atoms[1]
+
+
+def diatomic_symmetry_class(iso_name: str | None) -> str:
+    """Classify a diatomic isotopologue label for collision selection rules.
+
+    :param iso_name: Isotopologue label such as ``"12C2"``, ``"12C13C"``,
+        ``"12C14N"``, or ``None``.
+    :type iso_name: str or None
+    :returns: One of:
+
+        * ``"homonuclear"`` -- two identical ``(mass, element)`` atoms (e.g.,
+          ``"12C2"``, ``"13C2"``). Only ``|Delta J| = 2`` collisions are physical
+          (nuclear-spin manifold preserved).
+        * ``"same_element_heteronuclear"`` -- same element, different isotopes
+          (e.g., ``"12C13C"``, ``"1H2H"``). Symmetry is broken so all J exist,
+          but the underlying near-symmetric structure makes both ``|Delta J| = 1``
+          and ``|Delta J| = 2`` channels relevant.
+        * ``"heteronuclear"`` -- different elements (e.g., ``"12C14N"``,
+          ``"16O1H"``). Treat as a generic heteronuclear with the caller-provided
+          ``dJ_allowed`` (defaults to ``|Delta J| = 1`` only).
+        * ``"unknown"`` -- label could not be parsed as a diatomic.
+    :rtype: str
+    """
+    atoms = _parse_isotopologue_atoms(iso_name) if iso_name else []
+    if len(atoms) != 2:
+        return "unknown"
+    (m1, e1), (m2, e2) = atoms
+    if (m1, e1) == (m2, e2):
+        return "homonuclear"
+    if e1 == e2:
+        return "same_element_heteronuclear"
+    return "heteronuclear"
+
+
 def precompute_cn_collision_scaffold(
     lines_out: Any,
     idx_to_level: dict,
@@ -668,6 +1076,11 @@ def precompute_cn_collision_scaffold(
 
     include_deltaJ0_parity_mix: bool = True,
     require_X_only: bool = True,
+
+    # Generalized molecule handling
+    iso_name: str | None = None,
+    homonuclear: bool | None = None,
+    dJ_allowed: Sequence[int] = (1,),
 ) -> dict:
     """Build a rotational-collision scaffold from explicit lower-state columns.
 
@@ -689,10 +1102,39 @@ def precompute_cn_collision_scaffold(
     :type lower_sym_col: str
     :param E_lower_cm1_col: Lower-state energy column name in cm^-1.
     :type E_lower_cm1_col: str
-    :param include_deltaJ0_parity_mix: Allow parity-changing ``Delta J = 0`` collisions.
+    :param include_deltaJ0_parity_mix: Allow ``Delta J = 0`` collisions between
+        sublevels with different ``sym`` label at the same J. Fires when either
+        the molecule is truly heteronuclear (different elements, e.g. CN, OH) OR
+        the isotopologue has at least one nucleus with nonzero spin (hyperfine
+        structure, e.g. 13C2, 12C13C). Ignored only for strictly zero-hyperfine
+        homonuclear species like 12C2.
     :type include_deltaJ0_parity_mix: bool
-    :param require_X_only: Restrict collisions to X-state levels.
+    :param require_X_only: Restrict collisions to the ground electronic state. The
+        ground state is auto-detected as the ``lower_es`` label whose minimum
+        ``E_lower_cm1`` is smallest, so any spectroscopic notation works
+        (``"X"``, ``"X1Sigmag+"``, etc.).
     :type require_X_only: bool
+    :param iso_name: Optional isotopologue label (e.g., ``"12C2"``, ``"13C2"``,
+        ``"12C13C"``, ``"12C14N"``) used to auto-classify the diatomic via
+        :func:`diatomic_symmetry_class`. Drives the ``|Delta J|`` rule:
+
+        * homonuclear -> ``{2}`` only
+        * same-element heteronuclear (e.g., ``"12C13C"``) -> ``{1, 2}``
+        * heteronuclear different elements (e.g., ``"12C14N"``) -> uses
+          ``dJ_allowed``
+
+        Ignored when ``homonuclear`` is given explicitly.
+    :type iso_name: str or None
+    :param homonuclear: Explicit override for nuclear symmetry. ``True`` forces
+        ``|Delta J| = 2`` only and disables ``include_deltaJ0_parity_mix`` (preserves
+        nuclear-spin manifold). ``False`` uses ``dJ_allowed``. ``None`` auto-detects
+        from ``iso_name``.
+    :type homonuclear: bool or None
+    :param dJ_allowed: Allowed ``|Delta J|`` values for the heteronuclear
+        different-element case (e.g., CN). Defaults to ``(1,)`` to match historical
+        CN behavior. Ignored for homonuclear (forced to ``(2,)``) and for
+        same-element heteronuclear (forced to ``(1, 2)``).
+    :type dJ_allowed: Sequence[int]
     :returns: Scaffold dictionary with indices, degeneracies, and energy gaps.
     :rtype: dict
     :raises ValueError: If required columns are missing.
@@ -738,12 +1180,45 @@ def precompute_cn_collision_scaffold(
     good = np.isfinite(lv) & np.isfinite(lJ) & np.isfinite(Elow)
     lower_ids, les, lv, lJ, lsym, Elow = lower_ids[good], les[good], lv[good], lJ[good], lsym[good], Elow[good]
 
-    if require_X_only:
-        mX = np.array([str(es).strip().upper().startswith("X") for es in les], dtype=bool)
-        lower_ids, les, lv, lJ, lsym, Elow = lower_ids[mX], les[mX], lv[mX], lJ[mX], lsym[mX], Elow[mX]
+    if require_X_only and lower_ids.size > 0:
+        # Auto-detect the ground electronic state as the lower_es label whose
+        # minimum E_lower_cm1 is smallest. Notation-agnostic ("X", "X1Sigmag+", etc.).
+        es_strs = np.array([str(es).strip() for es in les])
+        unique_es = np.unique(es_strs)
+        es_min_E = {es: float(np.min(Elow[es_strs == es])) for es in unique_es}
+        ground_es = min(es_min_E, key=es_min_E.get)
+        m_ground = es_strs == ground_es
+        lower_ids, les, lv, lJ, lsym, Elow = (
+            lower_ids[m_ground], les[m_ground], lv[m_ground], lJ[m_ground], lsym[m_ground], Elow[m_ground]
+        )
 
     if lower_ids.size == 0:
         return _empty_scaffold()
+
+    # Resolve molecule class: explicit homonuclear override wins; otherwise classify
+    # from iso_name. Three branches:
+    #   - homonuclear (e.g., 12C2): |dJ|=2 only, no parity-mix (nuclear-spin conserved)
+    #   - same-element heteronuclear (e.g., 12C13C): |dJ|=1 and 2
+    #   - other heteronuclear (e.g., 12C14N): caller's dJ_allowed (default {1})
+    if homonuclear is True:
+        sym_class = "homonuclear"
+    elif homonuclear is False:
+        sym_class = "heteronuclear"
+    else:
+        sym_class = diatomic_symmetry_class(iso_name)
+
+    
+    if sym_class == "homonuclear":
+        dJ_set = {2}
+    elif sym_class == "same_element_heteronuclear":
+        dJ_set = {1, 2}
+    else:
+        dJ_set = {int(d) for d in dJ_allowed}
+
+    # Hyperfine structure (any nucleus with I>0) opens Delta J = 0 channels
+    # between hyperfine sublevels sharing the same J but different sym label,
+    # regardless of homonuclear vs heteronuclear.
+    has_hyperfine = _has_nonzero_nuclear_spin(iso_name)
 
     # Each unique ground level is defined by (es, v, J, sym)
     keys = list(zip(les.astype(str), lv.astype(float), lJ.astype(float), lsym.astype(str)))
@@ -786,7 +1261,12 @@ def precompute_cn_collision_scaffold(
             esb, vb, Jb, sb = ground[b]
 
             dJ = abs(float(Ja) - float(Jb))
-            allow = (dJ == 1) or (include_deltaJ0_parity_mix and dJ == 0 and str(sa) != str(sb))
+            allow = (int(dJ) in dJ_set) or (
+                (sym_class == "heteronuclear" or has_hyperfine)
+                and include_deltaJ0_parity_mix
+                and dJ == 0
+                and str(sa) != str(sb)
+            )
             if not allow:
                 continue
 
@@ -1285,7 +1765,7 @@ def mcmc_fitting(
     systems: str | Sequence[str] | None = None,
 
     # user-provided normalized transitions (single df or dict iso->df)
-    linelists: pd.DataFrame | dict[str, pd.DataFrame] | None = None,
+    linelists: pd.DataFrame | dict[str, pd.DataFrame] | Sequence[pd.DataFrame] | None = None,
 
     # collisions:
     include_rotations: bool = True,
@@ -1302,7 +1782,7 @@ def mcmc_fitting(
     make_plots: bool = False,
     progress: bool = True,
 
-    A_min: float = 1e4,
+    A_min: Optional[float] = 1e4,
     a: float = 3,
     threads: int = 1,
 
@@ -1311,10 +1791,20 @@ def mcmc_fitting(
     delta_lambda_A: float = 0.0,
 
     # NOTE: these are fallbacks for parameters not present in priors
-    init_logQ: float = -3.0,
+    init_logQ: Optional[float] = None,
+    init_logQ_by_iso: Optional[Dict[str, Optional[float]]] = None,
     init_T: float = 300.0,
     init_v_kms: float = 0.0,
     init_dlam: float = 0.0,
+    init_logN: Optional[float] = None,
+    init_logN_by_iso: Optional[Dict[str, float]] = None,
+    init_sigma: Optional[float] = None,
+    init_sigma1: Optional[float] = None,
+    init_sigma2: Optional[float] = None,
+    init_sigma_G: Optional[float] = None,
+    init_fwhm_L: Optional[float] = None,
+    init_ratio: Optional[float] = None,
+
 
     fig_file: Optional[str] = None,
     wave_col: str = "WAVE",
@@ -1324,6 +1814,7 @@ def mcmc_fitting(
     omega: Optional[float] = None,
     verbose: bool = True,
     pruning: bool = True,
+    N_Model: Optional[int] = 20000,
 ) -> Dict[str, Any]:
     """Run MCMC fitting for the fluorescence model in a wavelength window.
 
@@ -1344,13 +1835,16 @@ def mcmc_fitting(
             ``"ax(dv=2)"``/``"ax_dv2"`` -> ``["AX_dv2"]``
             ``"ax(dv=3)"``/``"ax_dv3"`` -> ``["AX_dv3"]``
         - ``nwalkers=50`` and ``nsteps=1000`` by default.
-        - Collision controls default to ``include_rotations=True``,
-            ``include_deltaJ0_parity_mix=True``, and ``require_X_only_for_rot=True``.
+        - Collisions are gated by ``logQ``: if neither a per-iso ``logQ_{iso}`` nor a
+            shared ``logQ`` prior is given, and neither ``init_logQ`` nor an entry in
+            ``init_logQ_by_iso`` is provided for an isotopologue, that isotopologue
+            is treated as collisionless. Other collision controls default to
+            ``include_deltaJ0_parity_mix=True`` and ``require_X_only_for_rot=True``.
         - Pumping-shift controls default to ``velocity_kms=0.0`` and
             ``delta_lambda_A=0.0``.
         - Fallback parameter values (used when the parameter is not sampled) default
-            to ``init_logQ=-3.0``, ``init_T=300.0``, ``init_v_kms=0.0``, and
-            ``init_dlam=0.0``.
+            to ``init_logQ=None`` (no shared collision rate), ``init_T=300.0``,
+            ``init_v_kms=0.0``, and ``init_dlam=0.0``.
 
     :param data: Observed spectrum table or DataFrame.
     :type data: Any
@@ -1364,11 +1858,11 @@ def mcmc_fitting(
     :type systems: str or Sequence[str] or None
     :param linelists: Optional normalized line-list DataFrame or isotopologue mapping.
     :type linelists: pandas.DataFrame or dict[str, pandas.DataFrame] or None
-    :param include_rotations: Enable rotational collisions.
-    :type include_rotations: bool
     :param include_deltaJ0_parity_mix: Allow parity-changing ``Delta J = 0`` collisions.
     :type include_deltaJ0_parity_mix: bool
-    :param require_X_only_for_rot: Restrict collisions to X-state levels.
+    :param require_X_only_for_rot: Restrict collisions to the ground electronic
+        state (auto-detected as the ``lower_es`` label with the smallest minimum
+        ``E_lower_cm1``; works for any spectroscopic notation).
     :type require_X_only_for_rot: bool
     :param nwalkers: Number of walkers. Default is ``50``.
     :type nwalkers: int
@@ -1394,8 +1888,14 @@ def mcmc_fitting(
     :type velocity_kms: float
     :param delta_lambda_A: Additive wavelength shift used when evaluating pumping J_nu. Default is ``0.0``.
     :type delta_lambda_A: float
-    :param init_logQ: Fallback ``logQ`` value when not sampled.
-    :type init_logQ: float
+    :param init_logQ: Fallback ``logQ`` value used by every isotopologue when no
+        ``logQ`` prior is sampled and no per-iso entry is given. ``None`` (default)
+        disables collisions for any isotopologue not covered by ``init_logQ_by_iso``.
+    :type init_logQ: float or None
+    :param init_logQ_by_iso: Per-isotopologue fallback ``logQ`` map. Each value may
+        be ``None`` to force that isotopologue to be collisionless. Isotopologues
+        not present in the map fall back to ``init_logQ``.
+    :type init_logQ_by_iso: dict[str, float or None] or None
     :param init_T: Fallback temperature value when not sampled.
     :type init_T: float
     :param init_v_kms: Fallback velocity shift when not sampled.
@@ -1418,6 +1918,8 @@ def mcmc_fitting(
     :type verbose: bool
     :param pruning: Apply posterior pruning.
     :type pruning: bool
+    :param N_Model: Number of elements in the model grid.
+    :type N_Model: int
     :returns: Dictionary with posterior summaries, samples, and model envelopes.
     :rtype: dict[str, Any]
     :raises ValueError: If priors or required parameters are inconsistent.
@@ -1467,33 +1969,50 @@ def mcmc_fitting(
         if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
             raise ValueError(f"Bad prior for {name!r}: {priors[name]}")
 
-    # ---------- 1) Line lists: defaults or user-provided ----------
-    if linelists is None:
-        trans_by_iso = load_default_cn_transitions(
-            isotopologues=iso_list,
-            systems=sys_tokens,
-            A_min=A_min,
-            use_omega_labels=False,
-            line_paths=None,
-        )
-    else:
-        if isinstance(linelists, pd.DataFrame):
-            if len(iso_list) != 1:
-                raise ValueError("If linelists is a single DataFrame, isotopologues must be a single iso.")
-            trans_by_iso = {iso_list[0]: linelists}
-        else:
-            trans_by_iso = {iso: linelists[iso] for iso in iso_list}
+    # ---------- 1) Line lists: defaults or user-provided (with default fallback) ----------
+    trans_by_iso = resolve_linelists_with_defaults(
+        linelists,
+        iso_list,
+        systems=sys_tokens,
+        A_min=A_min,
+        use_omega_labels=False,
+    )
+    if linelists is not None and A_min is not None:
+        # User-provided frames may not yet be A_min-filtered; defaults already are.
+        trans_by_iso = {
+            iso: df[df["A_ul"] >= A_min].reset_index(drop=True)
+            for iso, df in trans_by_iso.items()
+        }
 
-    # If include_rotations=True, enforce required columns in each iso linelist
-    if include_rotations:
-        req = {"lower_es", "lower_v", "lower_J", "lower_sym", "E_lower_cm1"}
-        for iso, df_trans in trans_by_iso.items():
-            missing = sorted(list(req - set(df_trans.columns)))
-            if missing:
-                raise ValueError(
-                    f"include_rotations=True but linelist for iso={iso!r} is missing columns: {missing}. "
-                    "Provide them via from_user_linelist(... lower_*_col=..., E_lower_cm1_col=...)."
-                )
+    # ---------- Decide per-iso whether collisions can ever fire ----------
+    # An isotopologue gets collisions only if logQ is reachable for it: either
+    # via a sampled prior (per-iso "logQ_{iso}" or shared "logQ"), or via a
+    # finite fallback (init_logQ_by_iso[iso] or init_logQ). A None fallback or
+    # an absent entry disables collisions for that iso entirely.
+    def _iso_can_collide(iso: str) -> bool:
+        if f"logQ_{iso}" in priors:
+            return True
+        if "logQ" in priors:
+            return True
+        if init_logQ_by_iso is not None and iso in init_logQ_by_iso:
+            return init_logQ_by_iso[iso] is not None
+        return init_logQ is not None
+
+    iso_collides = {iso: _iso_can_collide(iso) for iso in trans_by_iso.keys()}
+
+    # Enforce rotational columns only for isotopologues that will use collisions.
+    req = {"lower_es", "lower_v", "lower_J", "lower_sym", "E_lower_cm1"}
+    for iso, df_trans in trans_by_iso.items():
+        if not iso_collides[iso]:
+            continue
+        missing = sorted(list(req - set(df_trans.columns)))
+        if missing:
+            raise ValueError(
+                f"Isotopologue {iso!r} would use collisions (logQ provided) but its linelist "
+                f"is missing required columns: {missing}. Provide them via "
+                "from_user_linelist(... lower_*_col=..., E_lower_cm1_col=...), or set its "
+                "logQ to None to disable collisions for this isotopologue."
+            )
 
     # ---------- 2) Radiative caches per iso ----------
     cache: dict[str, dict[str, Any]] = {}
@@ -1524,11 +2043,12 @@ def mcmc_fitting(
         gph_work = np.empty_like(A_ul, dtype=float)
         gen_work = np.empty_like(A_ul, dtype=float)
 
-        if include_rotations:
+        if iso_collides[iso]:
             coll_scaf = precompute_cn_collision_scaffold_fast(
                 lines_out, idx_to_level,
                 include_deltaJ0_parity_mix=include_deltaJ0_parity_mix,
                 require_X_only=require_X_only_for_rot,
+                iso_name=iso,
             )
         else:
             coll_scaf = _empty_scaffold()
@@ -1594,6 +2114,22 @@ def mcmc_fitting(
             return None
         return make_lsf(pars, lsf_method)
 
+    def _logQ_for_iso(iso: str, pars: Dict[str, float]) -> float:
+        # Per-iso prior wins, then shared "logQ" prior, then per-iso init, then global init.
+        key = f"logQ_{iso}"
+        if key in pars:
+            return float(pars[key])
+        if "logQ" in pars:
+            return float(pars["logQ"])
+        if init_logQ_by_iso is not None and iso in init_logQ_by_iso:
+            try:
+                return float(init_logQ_by_iso[iso])
+            except TypeError:
+                return None
+        if init_logQ is not None:
+            return float(init_logQ)
+        return None
+
     def model_flux(theta: Sequence[float], wave: np.ndarray) -> np.ndarray:
         pars = theta_to_params(theta)
         wmin = float(np.min(wave))
@@ -1601,14 +2137,46 @@ def mcmc_fitting(
 
         # ✅ Correct fallback behavior:
         # If not being fit, use init_* (provided by caller), not magic hardcoded defaults.
-        logQ = float(pars["logQ"]) if "logQ" in pars else float(init_logQ)
-        T = float(pars["T"]) if "T" in pars else float(init_T)
-        v_kms = float(pars["v_kms"]) if "v_kms" in pars else float(init_v_kms)
-        dlam = float(pars["dlam"]) if "dlam" in pars else float(init_dlam)
+        try:
+            T = float(pars["T"]) if "T" in pars else float(init_T)
+        except TypeError:
+            T = None
+        try:
+            v_kms = float(pars["v_kms"]) if "v_kms" in pars else float(init_v_kms)
+        except TypeError:
+            v_kms = None
+        try:
+            dlam = float(pars["dlam"]) if "dlam" in pars else float(init_dlam)
+        except TypeError:
+            dlam = None
+        try:
+            sigma = float(pars["sigma"]) if "sigma" in pars else float(init_sigma)
+        except TypeError:
+            sigma = None
+        try:
+            sigma1 = float(pars["sigma1"]) if "sigma1" in pars else float(init_sigma1)
+        except TypeError:
+            sigma1 = None
+        try:
+            sigma2 = float(pars["sigma2"]) if "sigma2" in pars else float(init_sigma2)
+        except TypeError:
+            sigma2 = None
+        try:
+            sigma_G = float(pars["sigma_G"]) if "sigma_G" in pars else float(init_sigma_G)
+        except TypeError:
+            sigma_G = None
+        try:
+            fwhm_L = float(pars["fwhm_L"]) if "fwhm_L" in pars else float(init_fwhm_L)
+        except TypeError:
+            fwhm_L = None
+        try:
+            ratio = float(pars["ratio"]) if "ratio" in pars else float(init_ratio)
+        except TypeError:
+            ratio = None
 
-        lsf_fun = make_lsf_local(pars)
+        dict_for_lsf = {'sigma': sigma, 'sigma1': sigma1, 'sigma2': sigma2, 'sigma_G': sigma_G, 'fwhm_L': fwhm_L, 'ratio': ratio}
+        lsf_fun = make_lsf_local(dict_for_lsf)
 
-        Q = 10.0 ** logQ if np.isfinite(logQ) else 0.0
         spec_total = np.zeros_like(wave, dtype=float)
 
         use_reuse = (threads == 1)   # threads is captured from outer scope
@@ -1621,8 +2189,12 @@ def mcmc_fitting(
             else:
                 M = C["M_rad"].copy()
 
-            if Q > 0.0 and include_rotations:
-                apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q, T=T, Cup_work=C["Cup_work"])
+            logQ_i = _logQ_for_iso(iso, pars)
+            
+            if logQ_i is not None:
+                Q_i = 10.0 ** logQ_i if np.isfinite(logQ_i) else 0.0
+                if Q_i > 0.0 and include_rotations:
+                    apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q_i, T=T, Cup_work=C["Cup_work"])
 
             if use_reuse:
                 n = solve_with_normalization_fast(M, C["A_work"], C["b_work"])
@@ -1640,12 +2212,18 @@ def mcmc_fitting(
 
             # Column density per iso
             if len(iso_list) == 1 and "logN" in pars:
-                logN_i = float(pars["logN"])
+                try:
+                    logN_i = float(pars["logN"]) if "logN" in pars else float(init_logN)
+                except TypeError:
+                    logN_i = None
             else:
                 key = f"logN_{iso}"
                 if key not in pars:
                     raise ValueError(f"Missing parameter {key!r} in priors for multi-isotopologue fit.")
-                logN_i = float(pars[key])
+                try:
+                    logN_i = float(pars[key]) if key in pars else float(init_logN_by_iso.get(iso, init_logN))
+                except TypeError:
+                    logN_i = None
 
             _, spec_i = synth_spectrum_from_lines(
                 C["lines_out"],
@@ -1673,13 +2251,11 @@ def mcmc_fitting(
 
         pars = theta_to_params(theta)
 
-        logQ = float(pars["logQ"]) if "logQ" in pars else float(init_logQ)
         T = float(pars["T"]) if "T" in pars else float(init_T)
         v_kms = float(pars["v_kms"]) if "v_kms" in pars else float(init_v_kms)
         dlam = float(pars["dlam"]) if "dlam" in pars else float(init_dlam)
 
         lsf_fun = make_lsf_local(pars)
-        Q = 10.0 ** logQ if np.isfinite(logQ) else 0.0
 
         spec_total = np.zeros_like(wave, dtype=float)
 
@@ -1688,8 +2264,11 @@ def mcmc_fitting(
             M = C["M_work"]
             np.copyto(M, C["M_rad"])
 
-            if Q > 0.0 and include_rotations:
-                apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q, T=T, Cup_work=C["Cup_work"])
+            logQ_i = _logQ_for_iso(iso, pars)
+            if logQ_i is not None:
+                Q_i = 10.0 ** logQ_i if np.isfinite(logQ_i) else 0.0
+                if Q_i > 0.0 and include_rotations:
+                    apply_collisions_inplace_fast(M, C["coll_scaf"], Q=Q_i, T=T, Cup_work=C["Cup_work"])
 
             n = solve_with_normalization_fast(M, C["A_work"], C["b_work"])
 
@@ -1851,7 +2430,7 @@ def mcmc_fitting(
         print(f"{name}: {p50:.4f} +/- {err:.4f}  [{p16:.4f}, {p84:.4f}]")
 
     # ---------- 10) Model ensemble ----------
-    x_model = np.linspace(window[0], window[1], 20000)
+    x_model = np.linspace(window[0], window[1], N_Model)
     n_draw = min(200, samples_pruned.shape[0])
     model_stack = np.empty((n_draw, x_model.size))
     for i in range(n_draw):
@@ -1866,9 +2445,9 @@ def mcmc_fitting(
     model_p84 = p84_m
 
     param_labels = {
-        "logN": r"$\log_{10}(N$ / [mol cm$^{-2}$])",
+        "logN": r"$\log_{10}(N$ / [molecules cm$^{-2}$])",
         "logQ": r"$\log_{10}$(Q$_{\rm{col}}$ / [s$^{-1}$])",
-        "T": r"T [K]",
+        "T": r"$T_{kin}$ [K]",
         "v_kms": r"$\Delta$v [km s$^{-1}$]",
         "dlam": r"$\Delta \lambda$ [Å]",
         "sigma": r"$\sigma$ [Å]",
@@ -1876,7 +2455,13 @@ def mcmc_fitting(
         "sigma2": r"$\sigma_2$ [Å]",
         "sigma_G": r"$\sigma_G$ [Å]",
         "fwhm_L": r"FWHM$_L$ [Å]",
-        "ratio": r"Ratio",}
+        "ratio": r"Ratio",
+        }
+    if iso_list and len(iso_list) > 1:
+
+        param_lab_by_iso = {f'{k}_{iso}': f"{param_labels[k]}_{iso}" for k in param_labels for iso in iso_list}
+        # join both param_labels and param_lab_by_iso in one dict
+        param_labels = {**param_labels, **param_lab_by_iso}
     if make_plots:
         # traces
         fig, axes = plt.subplots(ndim, 1, figsize=(8, 2 * ndim), sharex=True)
@@ -1894,16 +2479,34 @@ def mcmc_fitting(
             axes[j].set_ylabel(param_labels[name])
         axes[-1].set_xlabel("iteration")
         fig.tight_layout()
+
         plt.savefig(f"{fig_file}_mcmc_traces.pdf", dpi=300, format='pdf')
         plt.show()
 
         # corner
-        corner.corner(
+        fig = corner.corner(
             samples_pruned,
             labels=[param_labels[k] for k in param_keys],
-            title_kwargs={'y':1.05},title_fmt=".3f",use_math_text=True,bins=15,quantiles=[0.16, 0.5, 0.84],show_titles=True,
-                color='lightseagreen',hist_kwargs={'color':'black','linewidth':1.5},contour_kwargs={'linewidths':1,'colors':'black'}, spacing=0.001
+            title_kwargs={'y':1.05},title_fmt=".2f",use_math_text=True,bins=15,quantiles=[0.16, 0.5, 0.84],show_titles=True,
+                color='lightseagreen',hist_kwargs={'color':'black','linewidth':1.5},contour_kwargs={'linewidths':1,'colors':'black'}, spacing=0.001, label_kwargs={'fontsize': 13},
         )
+        elements = [param_labels[k] for k in param_keys]
+        fig.subplots_adjust(wspace=0.05, hspace=0.05)
+        ndim = samples.shape[1]
+        axes = np.array(fig.axes).reshape((ndim, ndim))
+
+        for i in range(ndim):
+                ax = axes[i, i]
+                q16, q50, q84 = np.quantile(samples[:, i], [0.16, 0.5, 0.84])
+                q_minus, q_plus = q50 - q16, q84 - q50
+                title = (
+                        f"{elements[i]}\n"
+                        rf"=${q50:.2f}_{{-{q_minus:.2f}}}^{{+{q_plus:.2f}}}$"
+                )
+                ax.set_title(title, fontsize=11, y=1.05)
+        for ax in fig.get_axes():
+                ax.tick_params(axis='both', labelsize=10)
+
         plt.savefig(f"{fig_file}_corner.pdf", dpi=300, format='pdf')
         plt.show()
 
@@ -1939,3 +2542,4 @@ def mcmc_fitting(
         "model_p84": model_p84,
         "best_model": best_model,
     }
+    

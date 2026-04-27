@@ -600,6 +600,57 @@ def open_kurucz_irradiance() -> pd.DataFrame:
 
     return solar
 
+
+# Helper for the packaged Hall & Anderson UV solar irradiance file.
+def get_hall_anderson_irradiance_path() -> Path:
+    """Return the path to the packaged Hall & Anderson UV solar irradiance file.
+
+    :returns: Path to ``Hall_Anderson.txt``.
+    :rtype: pathlib.Path
+    :raises FileNotFoundError: If the packaged file is missing.
+    """
+    candidate = DATA_DIR / "Hall_Anderson.txt"
+    if not candidate.exists():
+        raise FileNotFoundError(
+            "Hall & Anderson solar irradiance file not found in data/. "
+            "Place the file there or provide your own path when loading pumping spectra."
+        )
+    return candidate
+
+
+def open_hall_anderson_irradiance(wave_max_AA: float = 2990.0) -> pd.DataFrame:
+    """Load the packaged Hall & Anderson UV solar irradiance file.
+
+    The on-disk file has wavelength in Angstrom and irradiance in
+    photons cm^-2 s^-1 Angstrom^-1. The output is converted to the same units
+    as :func:`open_kurucz_irradiance` and truncated at ``wave_max_AA`` so the two
+    spectra concatenate without overlap.
+
+    :param wave_max_AA: Upper wavelength cutoff in Angstrom (inclusive). Default
+        ``2990.0`` matches the Kurucz file's lower bound.
+    :type wave_max_AA: float
+    :returns: A DataFrame with columns ``WAVE`` (Angstrom) and ``FLUX``
+        (erg s^-1 cm^-2 Angstrom^-1).
+    :rtype: pandas.DataFrame
+    :raises FileNotFoundError: If the packaged Hall & Anderson file cannot be found.
+    """
+    path = get_hall_anderson_irradiance_path()
+    df = pd.read_csv(path, sep=r'\s+', names=['AA', 'photons'])
+    wave = np.asarray(df['AA'], dtype=float)
+    photon_flux = np.asarray(df['photons'], dtype=float)
+
+    mask = wave <= float(wave_max_AA)
+    wave = wave[mask]
+    photon_flux = photon_flux[mask]
+
+    photon_unit = u.photon / (u.s * u.cm**2 * u.AA)
+    target_unit = u.erg / (u.s * u.cm**2 * u.AA)
+    flux = (photon_flux * photon_unit).to(
+        target_unit, equivalencies=u.spectral_density(wave * u.AA)
+    ).value
+
+    return pd.DataFrame({'WAVE': wave, 'FLUX': flux})
+
 Mol = Literal["CN", "C2", "C3", "NH", "CH"]
 CNIso = Literal["12C14N", "13C14N", "12C15N"]
 
@@ -639,7 +690,14 @@ def get_default_mol_linelist_path(
                 "Place neowise_lines.txt in data/ or pass an explicit path."
             )
         return candidate
-
+    if 'Fe' in mol:
+        candidate = DATA_DIR / "fe_normalized.csv"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"Default Fe atomic line list not found: {candidate!s}. "
+                "Place fe_normalized.csv in data/ or pass an explicit path."
+            )
+        return candidate
     raise ValueError(f"Unknown mol={mol!r}. Expected one of: CN, C2, C3, NH, CH.")
 
 
