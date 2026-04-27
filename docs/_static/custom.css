@@ -1,0 +1,127 @@
+/* CometSpec custom styles */
+
+/* Hero section styling */
+.hero-section {
+    text-align: center;
+    padding: 2rem 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #0D1117 0%, #1B2838 40%, #1a2744 70%, #0D1117 100%);
+    position: relative;
+    overflow: hidden;
+}
+
+.hero-section::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+        radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,0.6), transparent),
+        radial-gradient(1px 1px at 30% 70%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 50% 10%, rgba(255,255,255,0.5), transparent),
+        radial-gradient(1px 1px at 70% 50%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1px 1px at 90% 80%, rgba(255,255,255,0.5), transparent),
+        radial-gradient(2px 2px at 20% 60%, rgba(200,220,255,0.7), transparent),
+        radial-gradient(1px 1px at 80% 30%, rgba(255,255,255,0.4), transparent),
+        radial-gradient(1px 1px at 60% 90%, rgba(255,255,255,0.3), transparent),
+        radial-gradient(1.5px 1.5px at 40% 40%, rgba(180,210,255,0.6), transparent),
+        radial-gradient(1px 1px at 15% 85%, rgba(255,255,255,0.4), transparent);
+    pointer-events: none;
+}
+
+.hero-section h1 {
+    color: #C9D1D9 !important;
+    font-size: 2.8rem !important;
+    margin-bottom: 0.3rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 2px;
+    border: none !important;
+}
+
+.hero-section .hero-tagline {
+    color: #8B949E;
+    font-size: 1.15rem;
+    margin-bottom: 1.2rem;
+    font-style: italic;
+}
+
+.hero-section .hero-badges {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.hero-section .hero-badges a {
+    text-decoration: none;
+}
+
+/* Feature cards */
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.feature-card {
+    padding: 1.2rem;
+    border-radius: 8px;
+    border: 1px solid var(--color-background-border, #e0e0e0);
+    background: var(--color-background-secondary, #f8f9fa);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.feature-card .feature-icon {
+    font-size: 1.8rem;
+    margin-bottom: 0.5rem;
+}
+
+.feature-card h3 {
+    margin: 0 0 0.4rem !important;
+    font-size: 1rem !important;
+}
+
+.feature-card p {
+    margin: 0 !important;
+    font-size: 0.9rem;
+    color: var(--color-foreground-secondary, #666);
+}
+
+/* Code block enhancements */
+div.highlight pre {
+    border-radius: 8px;
+    padding: 1rem;
+}
+
+/* Admonition styling */
+.admonition {
+    border-radius: 8px !important;
+    border-left-width: 4px !important;
+}
+
+/* Sidebar refinements */
+.sidebar-brand {
+    font-weight: 700;
+}
+
+/* API docs styling */
+dl.py dt {
+    border-radius: 4px;
+    padding: 0.4rem 0.6rem;
+}
+
+/* Responsive tweaks */
+@media (max-width: 600px) {
+    .hero-section h1 {
+        font-size: 2rem !important;
+    }
+    .feature-grid {
+        grid-template-columns: 1fr;
+    }
+}

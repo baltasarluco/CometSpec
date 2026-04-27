@@ -3,7 +3,7 @@ build/
 dist/
 *.egg-info/
 .DS_Store
-docs/
+docs/_build/
 
 # IDE settings
 .vscode/
