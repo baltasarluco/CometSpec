@@ -5,6 +5,9 @@ dist/
 .DS_Store
 docs/
 
+# IDE settings
+.vscode/
+
 # Python bytecode
 __pycache__/
 *.pyc
