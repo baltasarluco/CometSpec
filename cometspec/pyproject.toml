@@ -21,11 +21,18 @@ dependencies = [
     "emcee>=3.1",
     "corner>=2.2",
     "specutils>=1.9",
+    "tqdm>=4.60",
+    "tables>=3.7",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+]
+docs = [
+    "sphinx>=7.0",
+    "furo>=2024.1",
+    "sphinx-autodoc-typehints>=1.25",
 ]
 
 [project.urls]
@@ -39,4 +46,4 @@ include-package-data = true
 include = ["cometspec", "cometspec.*"]
 
 [tool.setuptools.package-data]
-"cometspec" = ["data/**/*.txt", "data/**/*.dat"]
+"cometspec" = ["data/**/*.txt", "data/**/*.dat", "data/**/*.csv", "data/**/*.h5"]
