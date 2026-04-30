@@ -18,3 +18,5 @@ __pycache__/
 *.pkl
 WorkFlow_Example/13C2__8states.trans
 WorkFlow_Example/MCMC_results/example1.pkl
+WorkFlow_Example/Output_spectras/
+WorkFlow_Example/Example_plots/
