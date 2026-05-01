@@ -1,38 +1,62 @@
-from __future__ import annotations
-
 """Helper utilities for :mod:`cometspec`.
 
-This module provides helpers to:
-- load and open tables
-- locate and load spectra
-- load ephemeris summaries
-- load pumping spectra
-- get packaged molecular and atomic line lists
-- work with slit-loss and seeing estimates
+This module groups small, self-contained utilities used across the package and the jupyter notebook examples:
+table, spectrum and ephemeris loaders, and some numerical and analytical helpers for
+seeing-dependent slit-loss estimates.
+
+Notes
+-----
+- Packaged data files live under ``cometspec/data/``. The ``get_*_path``
+  helpers resolve those locations relative to the installed package.
+- Wavelengths returned by line-list loaders are in vacuum Angstrom unless
+  documented otherwise.
+
+Routines
+--------
+- :func:`make_fwhm_lambda_bounds`
+    Wavelength-dependent seeing bounds from min/max zenith seeing and min/max zenith angles.
+- :func:`frac_in_circular_aperture_gaussian`, :func:`frac_in_rectangular_aperture_gaussian`
+    Encircled-energy fraction of a 2-D Gaussian PSF in circular / rectangular apertures.
+- :func:`throughput_vs_lambda`
+    Wavelength-dependent flux throughput of an aperture derived from min/max zenith seeing and min/max zenith angles.
+- :func:`add_slit_loss_error_scalar`
+    Include the slit-loss systematic error to a scalar.
+- :func:`open_table`
+    Open CSV tables into an :class:`astropy.table.Table`.
+- :func:`find_spectrum_file`, :func:`load_spectrum`
+    Locate and load science spectra from a directory tree.
+- :func:`load_ephemeris_summary`, :func:`get_ephemeris_for_night`
+    Load an ephemeris summary table and select a given UT night.
+- :func:`get_kurucz_irradiance_path`, :func:`open_kurucz_irradiance`
+    Locate and open the `Kurucz <http://kurucz.harvard.edu/sun/irradiance2005/>`_ solar irradiance [2]_.
+- :func:`get_hall_anderson_irradiance_path`, :func:`open_hall_anderson_irradiance`
+    Locate and open the `Hall & Anderson <https://www.ngdc.noaa.gov/stp/space-weather/solar-data/solar-indices/SOLAR_UV/MID_UV/>`_ UV solar irradiance [3]_.
+- :func:`load_cn_linelist`
+    Load the packaged CN line lists for a given isotopologue [4]_ [5]_.
 """
+from __future__ import annotations
 
 import os
-import re
 import io
 import math
-
+import warnings
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Literal, Union
+from typing import Dict, Any, Optional, Union
 
 import numpy as np
 import pandas as pd
 from astropy.table import Table
 from astropy import units as u
-from specutils.utils.wcs_utils import air_to_vac
+
+#: Package path
+PACKAGE_DIR: Path = Path(__file__).resolve().parent
+#: PACKAGE_DIR / "data"
+DATA_DIR: Path = PACKAGE_DIR / "data"
 
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-DATA_DIR = PACKAGE_DIR / "data"
-
-# Slit-loss and seeing helpers for a Gaussian PSF.
-# ---------------------------------------------------------------------
 def make_fwhm_lambda_bounds(
+    *,
     eps_min_arcsec_500: float,
     eps_max_arcsec_500: float,
     zmin_deg: float,
@@ -41,26 +65,56 @@ def make_fwhm_lambda_bounds(
     alpha: float = -1 / 5,
     k: float = 0.6,
 ):
-    """Build wavelength-dependent seeing bounds.
+    """Build wavelength-dependent seeing bounds from the minimum and maximum seeing values (at zenith) and the minimum and maximum zenith angles. See Persson (2022) [1]_.
 
-    :param eps_min_arcsec_500: Minimum seeing at 500nm and zenith, in arcsec.
-    :type eps_min_arcsec_500: float
-    :param eps_max_arcsec_500: Maximum seeing at 500nm and zenith, in arcsec.
-    :type eps_max_arcsec_500: float
-    :param zmin_deg: Minimum zenith angle in degrees.
-    :type zmin_deg: float
-    :param zmax_deg: Maximum zenith angle in degrees.
-    :type zmax_deg: float
-    :param lambda0_nm: Reference wavelength for the seeing scaling, in nm.
-    :type lambda0_nm: float
-    :param alpha: Wavelength scaling exponent. (see, e.g., Persson, S. E. 2022, PASP, 134, 075001,1082)
-    :type alpha: float
-    :param k: Airmass scaling exponent.
-    :type k: float
-    :returns: A pair ``(fwhm_min, fwhm_max)`` of callables that evaluate the minimum and maximum FWHM in arcsec given the max and min seeing and zenith angles.
-    :rtype: tuple[callable, callable]
-    :raises ValueError: If a zenith angle is greater than or equal to 90 degrees.
+    Parameters
+    ----------
+    eps_min_arcsec_500 : float
+        Minimum seeing at 500nm and zenith, in arcsec. It can be at any other wavelength, but lambda0_nm and alpha must be set accordingly.
+    eps_max_arcsec_500 : float
+        Maximum seeing at 500nm and zenith, in arcsec.
+    zmin_deg : float
+        Minimum zenith angle in degrees (zenith angle = 90° - elevation angle).
+    zmax_deg : float
+        Maximum zenith angle in degrees (zenith angle = 90° - elevation angle).
+    lambda0_nm : float, optional, default 500.0
+        Reference wavelength for the seeing scaling, in nm.
+    alpha : float, optional, default -1 / 5
+        Wavelength scaling exponent.
+    k : float, optional, default 0.6
+        Airmass scaling exponent.
+
+    Returns
+    -------
+    tuple[callable, callable]
+        A pair ``(fwhm_min, fwhm_max)`` of callables that evaluate the minimum and maximum FWHM in arcsec as a fuction of wavelength given the max and min seeing and zenith angles. Each callable takes ``x : float or ndarray of float`` and returns ``f(x) : float or ndarray of float of the same shape``.
+
+    Raises
+    ------
+    ValueError
+        If a zenith angle is greater than or equal to 90 degrees.
+
+    References
+    ----------
+        .. [1] Persson, S. E. 2022, PASP, 134, 075001 (`link <https://iopscience.iop.org/article/10.1088/1538-3873/ac67b0>`_).
     """
+
+    if eps_min_arcsec_500 > eps_max_arcsec_500:
+        warnings.warn(
+            f"eps_min_arcsec_500 ({eps_min_arcsec_500}) > eps_max_arcsec_500 "
+            f"({eps_max_arcsec_500}); swapping so that '_min' corresponds to "
+            "the best (smallest) seeing.",
+            stacklevel=2,
+        )
+        eps_min_arcsec_500, eps_max_arcsec_500 = eps_max_arcsec_500, eps_min_arcsec_500
+    if zmin_deg > zmax_deg:
+        warnings.warn(
+            f"zmin_deg ({zmin_deg}) > zmax_deg ({zmax_deg}); swapping so that "
+            "'_min' corresponds to the best (smallest) zenith angle.",
+            stacklevel=2,
+        )
+        zmin_deg, zmax_deg = zmax_deg, zmin_deg
+
     def secz(z_deg):
         z = np.deg2rad(z_deg)
         c = np.cos(z)
@@ -89,12 +143,17 @@ def make_fwhm_lambda_bounds(
 def frac_in_circular_aperture_gaussian(fwhm_arcsec, radius_arcsec):
     """Compute the fraction of a 2D Gaussian inside a circular aperture.
 
-    :param fwhm_arcsec: Gaussian full width at half maximum in arcsec.
-    :type fwhm_arcsec: float or array-like
-    :param radius_arcsec: Aperture radius in arcsec.
-    :type radius_arcsec: float
-    :returns: Fraction of the Gaussian flux inside the aperture.
-    :rtype: numpy.ndarray or float
+    Parameters
+    ----------
+    fwhm_arcsec : float or numpy.ndarray of float
+        Gaussian full width at half maximum in arcsec.
+    radius_arcsec : float
+        Aperture radius in arcsec.
+
+    Returns
+    -------
+    numpy.ndarray or float
+        Fraction of the Gaussian flux inside the aperture.
     """
     fwhm = np.asarray(fwhm_arcsec, dtype=float)
     R = float(radius_arcsec)
@@ -102,17 +161,22 @@ def frac_in_circular_aperture_gaussian(fwhm_arcsec, radius_arcsec):
     return 1.0 - np.exp(-(R * R) / (2.0 * sigma * sigma))
 
 
-def frac_in_rectangular_aperture_gaussian(fwhm_arcsec, width_arcsec, length_arcsec):
+def frac_in_rectangular_aperture_gaussian(fwhm_arcsec, *, width_arcsec, length_arcsec):
     """Compute the fraction of a 2D Gaussian inside a rectangular aperture.
 
-    :param fwhm_arcsec: Gaussian full width at half maximum in arcsec.
-    :type fwhm_arcsec: float or array-like
-    :param width_arcsec: Rectangle width in arcsec.
-    :type width_arcsec: float
-    :param length_arcsec: Rectangle length in arcsec.
-    :type length_arcsec: float
-    :returns: Fraction of the Gaussian flux inside the rectangle.
-    :rtype: numpy.ndarray or float
+    Parameters
+    ----------
+    fwhm_arcsec : float or numpy.ndarray of float
+        Gaussian full width at half maximum in arcsec.
+    width_arcsec : float
+        Rectangle width in arcsec.
+    length_arcsec : float
+        Rectangle length in arcsec.
+
+    Returns
+    -------
+    numpy.ndarray or float
+        Fraction of the Gaussian flux inside the rectangle.
     """
     fwhm = np.asarray(fwhm_arcsec, dtype=float)
     w = float(width_arcsec)
@@ -125,14 +189,15 @@ def frac_in_rectangular_aperture_gaussian(fwhm_arcsec, width_arcsec, length_arcs
 
 
 def throughput_vs_lambda(
+    *,
     lambda_min_nm: float,
     lambda_max_nm: float,
     eps_min_arcsec_500: float,
     eps_max_arcsec_500: float,
     zmin_deg: float,
     zmax_deg: float,
-    n_points: int,
     aperture: dict,
+    n_points: int = 2000,
 ):
     """Estimate the aperture-enclosed flux fraction and slit loss as a function of wavelength.
 
@@ -142,55 +207,83 @@ def throughput_vs_lambda(
 
     .. note::
         The ``_min`` / ``_max`` suffix in the output keys refers to the **input**
-        seeing/zenith extremes, not to the numerical ordering of the output values.
+        seeing/zenith extremes ( ``_min`` / ``_max`` **FWHM**), not to the numerical ordering of the output values.
         Because a sharper PSF concentrates more flux, ``frac_min`` (best seeing) is
         numerically *larger* than ``frac_max`` (worst seeing), and ``loss_min`` is
         numerically *smaller* than ``loss_max``.
 
-    :param lambda_min_nm: Minimum wavelength of the evaluation grid, in nm.
-    :type lambda_min_nm: float
-    :param lambda_max_nm: Maximum wavelength of the evaluation grid, in nm.
-    :type lambda_max_nm: float
-    :param eps_min_arcsec_500: Best (minimum) seeing FWHM at 500 nm and zenith, in arcsec.
-    :type eps_min_arcsec_500: float
-    :param eps_max_arcsec_500: Worst (maximum) seeing FWHM at 500 nm and zenith, in arcsec.
-    :type eps_max_arcsec_500: float
-    :param zmin_deg: Minimum (best) zenith angle during observations, in degrees.
-    :type zmin_deg: float
-    :param zmax_deg: Maximum (worst) zenith angle during observations, in degrees.
-    :type zmax_deg: float
-    :param n_points: Number of wavelength points in the evaluation grid. Must be >= 2.
-    :type n_points: int
-    :param aperture: Aperture definition. Must contain the key ``'type'`` with value
-        ``'circular'`` or ``'rectangular'``. For circular apertures, also requires
-        ``'radius_arcsec'`` (float). For rectangular apertures, requires
-        ``'width_arcsec'`` and ``'length_arcsec'`` (both float).
-    :type aperture: dict
+    Parameters
+    ----------
+    lambda_min_nm : float
+        Minimum wavelength of the evaluation grid, in nm.
+    lambda_max_nm : float
+        Maximum wavelength of the evaluation grid, in nm.
+    eps_min_arcsec_500 : float
+        Best (minimum) seeing FWHM at 500 nm and zenith, in arcsec.
+    eps_max_arcsec_500 : float
+        Worst (maximum) seeing FWHM at 500 nm and zenith, in arcsec.
+    zmin_deg : float
+        Minimum (best) zenith angle during observations, in degrees (zenith angle = 90° - elevation angle).
+    zmax_deg : float
+        Maximum (worst) zenith angle during observations, in degrees (zenith angle = 90° - elevation angle).
+    aperture : dict
+        Aperture definition. Keys:
 
-    :returns: Dictionary with the following keys, each an ``ndarray`` of length ``n_points``:
+        * ``type`` ({'circular', 'rectangular'}) -- Aperture shape.
+        * ``radius_arcsec`` (float, optional) -- Radius in arcsec. Required if ``type='circular'``.
+        * ``width_arcsec`` (float, optional) -- Width in arcsec. Required if ``type='rectangular'``.
+        * ``length_arcsec`` (float, optional) -- Length in arcsec. Required if ``type='rectangular'``.
 
-        - **lambda_nm** (*ndarray*): Wavelength grid, in nm.
-        - **fwhm_min_arcsec** (*ndarray*): PSF FWHM at best seeing (``eps_min``, ``zmin``)
+    n_points : int, optional, default 2000
+        Number of wavelength points in the evaluation grid. Must be >= 2. Defaults to 2000.
+
+    Returns
+    -------
+    dict
+        Dictionary with the following keys. Each value is an ``ndarray`` of
+        length ``n_points``:
+
+        * ``lambda_nm`` -- Wavelength grid, in nm.
+        * ``fwhm_min_arcsec`` -- PSF FWHM at best seeing (``eps_min``, ``zmin``)
           as a function of wavelength, in arcsec. Numerically the smallest FWHM values.
-        - **fwhm_max_arcsec** (*ndarray*): PSF FWHM at worst seeing (``eps_max``, ``zmax``)
+        * ``fwhm_max_arcsec`` -- PSF FWHM at worst seeing (``eps_max``, ``zmax``)
           as a function of wavelength, in arcsec. Numerically the largest FWHM values.
-        - **frac_min** (*ndarray*): Enclosed flux fraction at best seeing conditions.
+        * ``frac_min`` -- Enclosed flux fraction at best seeing conditions.
           Numerically the *largest* fraction (sharpest PSF → most flux within aperture).
-        - **frac_max** (*ndarray*): Enclosed flux fraction at worst seeing conditions.
+        * ``frac_max`` -- Enclosed flux fraction at worst seeing conditions.
           Numerically the *smallest* fraction (broadest PSF → least flux within aperture).
-        - **loss_min** (*ndarray*): Slit loss at best seeing, i.e. ``1 - frac_min``.
+        * ``loss_min`` -- Slit loss at best seeing, i.e. ``1 - frac_min``.
           Numerically the *smallest* loss.
-        - **loss_max** (*ndarray*): Slit loss at worst seeing, i.e. ``1 - frac_max``.
+        * ``loss_max`` -- Slit loss at worst seeing, i.e. ``1 - frac_max``.
           Numerically the *largest* loss.
 
-    :rtype: dict
-    :raises ValueError: If ``n_points`` is smaller than 2 or ``aperture['type']``
+    Raises
+    ------
+    ValueError
+        If ``n_points`` is smaller than 2 or ``aperture['type']``
         is not ``'circular'`` or ``'rectangular'``.
     """
 
     if n_points < 2:
         raise ValueError("n_points must be >= 2")
+    
+    if eps_min_arcsec_500 > eps_max_arcsec_500:
+        warnings.warn(
+            f"eps_min_arcsec_500 ({eps_min_arcsec_500}) > eps_max_arcsec_500 "
+            f"({eps_max_arcsec_500}); swapping so that '_min' corresponds to "
+            "the best (smallest) seeing.",
+            stacklevel=2,
+        )
+        eps_min_arcsec_500, eps_max_arcsec_500 = eps_max_arcsec_500, eps_min_arcsec_500
 
+    if zmin_deg > zmax_deg:
+        warnings.warn(
+            f"zmin_deg ({zmin_deg}) > zmax_deg ({zmax_deg}); swapping so that "
+            "'_min' corresponds to the best (smallest) zenith angle.",
+            stacklevel=2,
+        )
+        zmin_deg, zmax_deg = zmax_deg, zmin_deg
+        
     lam = np.linspace(lambda_min_nm, lambda_max_nm, n_points)
 
     fmin_fun, fmax_fun = make_fwhm_lambda_bounds(
@@ -211,12 +304,11 @@ def throughput_vs_lambda(
     elif ap_type == "rectangular":
         w = float(aperture["width_arcsec"])
         l = float(aperture["length_arcsec"])
-        frac_min = frac_in_rectangular_aperture_gaussian(fwhm_min, w, l)
-        frac_max = frac_in_rectangular_aperture_gaussian(fwhm_max, w, l)
+        frac_min = frac_in_rectangular_aperture_gaussian(fwhm_min, width_arcsec=w, length_arcsec=l)
+        frac_max = frac_in_rectangular_aperture_gaussian(fwhm_max, width_arcsec=w, length_arcsec=l)
     else:
         raise ValueError("aperture['type'] must be 'circular' or 'rectangular'")
 
-    # frac_min come from the smalles PSF, then is higher than frac_max 
     loss_min = 1.0 - frac_min
     loss_max = 1.0 - frac_max
 
@@ -232,7 +324,6 @@ def throughput_vs_lambda(
 
 
 def add_slit_loss_error_scalar(
-    q_log10: float,
     q_err: float,
     *,
     lambda_nm: float,
@@ -243,11 +334,11 @@ def add_slit_loss_error_scalar(
     zmax_deg: float = 45.0,
     n_points: int = 2000,
 ):
-    """Propagate slit-loss uncertainty into a scalar log10 abundance error.
+    r"""Add slit-loss uncertainty to the log10 error of a log10 quantity.
 
     Evaluates the aperture-enclosed flux fraction over a narrow wavelength window
     centred on ``lambda_nm`` for both the best- and worst-case seeing/zenith
-    conditions. From those two flux fractions it derives a symmetric systematic
+    conditions (see :func:`throughput_vs_lambda`). From those two flux fractions it derives a symmetric systematic
     uncertainty in log10 space via a geometric-mean scaling, then adds it in
     quadrature to the input statistical error.
 
@@ -255,60 +346,91 @@ def add_slit_loss_error_scalar(
 
     .. math::
 
-        f_\\text{mid} = \\sqrt{f_\\text{best} \\cdot f_\\text{worst}}
+        \begin{aligned}
+            \sigma_\mathrm{sys} &= \tfrac{1}{2}\log_{10} \left( \frac{\bar{f}_\mathrm{max}}{\bar{f}_\mathrm{min}} \right) \\[4pt]
+            \sigma_\mathrm{tot} &= \sqrt{\sigma_\mathrm{stat}^{2} + \sigma_\mathrm{sys}^{2}}
+        \end{aligned}
 
-        \\sigma_\\text{sys} = \\log_{10}\\!\\left(\\sqrt{\\frac{f_\\text{best}}{f_\\text{worst}}}\\right)
-        = \\frac{1}{2}\\log_{10}\\!\\left(\\frac{f_\\text{best}}{f_\\text{worst}}\\right)
-
-        \\sigma_\\text{total} = \\sqrt{\\sigma_\\text{stat}^2 + \\sigma_\\text{sys}^2}
+    Where :math:`\sigma_\mathrm{stat}` is the input statistical error ``q_err``, and :math:`\bar{f}_\mathrm{min}` and :math:`\bar{f}_\mathrm{max}` are the mean flux fractions over the wavelength window for the best and worst seeing/zenith conditions, respectively.
+    
+    .. important::
+        ``q_err`` **must be the error of a log10 quantity
+        proportional to the aperture-collected flux** (e.g., ``log10(F)``,
+        ``log10(N)`` for a column density inferred from line flux, or any
+        derived quantity ``Q`` such that ``Q ∝ F``). The slit loss multiplies
+        the true flux by a fraction ``f ∈ (0, 1]``, so on a log scale it acts
+        as an additive shift ``Δlog10(Q) = log10(f)``. The systematic-error
+        derivation in this function assumes exactly that additive structure;
+        feeding it a linear-space value or a quantity not proportional to flux
+        will produce an incorrect uncertainty.
 
     .. note::
         The wavelength window used for the flux-fraction estimate is
         ``[lambda_nm - 0.01, lambda_nm + 0.01]`` nm, sampled with ``n_points``
-        points, and the result is averaged over that window.
+        points, and the result flux fraction is averaged over that window.
 
-    :param q_log10: Log10 of the production rate or abundance (e.g. log10 Q).
-    :type q_log10: float
-    :param q_err: One-sigma statistical uncertainty on ``q_log10``, in dex.
-    :type q_err: float
-    :param lambda_nm: Central wavelength at which to evaluate the slit-loss
+    Parameters
+    ----------
+    q_err : float
+        One-sigma statistical uncertainty in log10 space from a quantity proportional to the aperture-collected flux (e.g., the error of log10(column density)).
+    lambda_nm : float
+        Central wavelength at which to evaluate the slit-loss
         systematic, in nm.
-    :type lambda_nm: float
-    :param aperture: Aperture definition. Must contain the key ``'type'`` with
+    aperture : dict
+        Aperture definition. Must contain the key ``'type'`` with
         value ``'circular'`` or ``'rectangular'``. For circular apertures, also
         requires ``'radius_arcsec'`` (float). For rectangular apertures, requires
         ``'width_arcsec'`` and ``'length_arcsec'`` (both float).
-    :type aperture: dict
-    :param eps_min_arcsec_500: Best (minimum) seeing FWHM at 500 nm and zenith,
+    eps_min_arcsec_500 : float, optional, default 0.7
+        Best (minimum) seeing FWHM at 500 nm and zenith,
         in arcsec. Defaults to 0.7.
-    :type eps_min_arcsec_500: float
-    :param eps_max_arcsec_500: Worst (maximum) seeing FWHM at 500 nm and zenith,
+    eps_max_arcsec_500 : float, optional, default 1.2
+        Worst (maximum) seeing FWHM at 500 nm and zenith,
         in arcsec. Defaults to 1.2.
-    :type eps_max_arcsec_500: float
-    :param zmin_deg: Minimum (best) zenith angle during observations, in degrees.
+    zmin_deg : float, optional, default 45.0
+        Minimum (best) zenith angle during observations, in degrees.
         Defaults to 45.0.
-    :type zmin_deg: float
-    :param zmax_deg: Maximum (worst) zenith angle during observations, in degrees.
+    zmax_deg : float, optional, default 45.0
+        Maximum (worst) zenith angle during observations, in degrees.
         Defaults to 45.0.
-    :type zmax_deg: float
-    :param n_points: Number of wavelength points used to sample the narrow window
+    n_points : int, optional, default 2000
+        Number of wavelength points used to sample the narrow window
         around ``lambda_nm``. Must be >= 2. Defaults to 2000.
-    :type n_points: int
 
-    :returns: Total one-sigma uncertainty on ``q_log10`` in dex, equal to the
+    Returns
+    -------
+    float
+        Total one-sigma uncertainty on ``q_log10`` in dex, equal to the
         quadrature sum of the input statistical error ``q_err`` and the symmetric
         slit-loss systematic ``sigma_sys``:
 
-        .. math::
-            \\sigma_\\text{total} = \\sqrt{q_\\text{err}^2 + \\sigma_\\text{sys}^2}
-
-    :rtype: float
-    :raises ValueError: If ``n_points`` is smaller than 2 or ``aperture['type']``
+    Raises
+    ------
+    ValueError
+        If ``n_points`` is smaller than 2 or ``aperture['type']``
         is not ``'circular'`` or ``'rectangular'``.
     """
+    if n_points < 2:
+        raise ValueError("n_points must be >= 2")
+    if eps_min_arcsec_500 > eps_max_arcsec_500:
+        warnings.warn(
+            f"eps_min_arcsec_500 ({eps_min_arcsec_500}) > eps_max_arcsec_500 "
+            f"({eps_max_arcsec_500}); swapping so that '_min' corresponds to "
+            "the best (smallest) seeing.",
+            stacklevel=2,
+        )
+        eps_min_arcsec_500, eps_max_arcsec_500 = eps_max_arcsec_500, eps_min_arcsec_500
+    if zmin_deg > zmax_deg:
+        warnings.warn(
+            f"zmin_deg ({zmin_deg}) > zmax_deg ({zmax_deg}); swapping so that "
+            "'_min' corresponds to the best (smallest) zenith angle.",
+            stacklevel=2,
+        )
+        zmin_deg, zmax_deg = zmax_deg, zmin_deg
+
     out = throughput_vs_lambda(
-        lambda_nm - 0.01,
-        lambda_nm + 0.01,
+        lambda_min_nm=lambda_nm - 0.01,
+        lambda_max_nm=lambda_nm + 0.01,
         eps_min_arcsec_500=eps_min_arcsec_500,
         eps_max_arcsec_500=eps_max_arcsec_500,
         zmin_deg=zmin_deg,
@@ -319,16 +441,11 @@ def add_slit_loss_error_scalar(
     f_min = float(np.mean(out["frac_min"]))
     f_max = float(np.mean(out["frac_max"]))
 
-    # Apply the same scaling logic used in the notebook workflow.
-    s_min = np.sqrt(f_min * f_max) / f_max
-    s_max = np.sqrt(f_min * f_max) / f_min
-
-    q_low = q_log10 + np.log10(s_min)
-    q_high = q_log10 + np.log10(s_max)
-    sys_sym = float(np.mean([abs(q_log10 - q_low), abs(q_high - q_log10)]))
+    sys_sym = 0.5 * np.log10(f_max / f_min)
 
     err = float(np.sqrt(q_err**2 + sys_sym**2))
     return err
+
 
 def open_table(
     file_path: os.PathLike | str,
@@ -336,40 +453,56 @@ def open_table(
     header_row: int = 0,
     units_row: Optional[int] = 1,
     data_start: int = 2,
-    fmt: str = "ascii.csv",
-) -> Table:
-    """Read a CSV/ASCII table with an optional units row.
+    delimiter: str = ",",
 
-    :param file_path: Path to the table file.
-    :type file_path: os.PathLike | str
-    :param header_row: Zero-based row index containing the column names.
-    :type header_row: int
-    :param units_row: Zero-based row index containing the units row, or ``None`` to skip unit parsing.
-    :type units_row: int or None
-    :param data_start: Zero-based row index where table data begin.
-    :type data_start: int
-    :param fmt: Astropy table format string.
-    :type fmt: str
-    :returns: The loaded table.
-    :rtype: astropy.table.Table
-    :raises ValueError: If the units row is requested but is outside the file.
+) -> Table:
+    """Read a CSV table with an optional units row.
+
+    .. note::
+        The ``units_row`` expect strings that can be parsed by ``astropy.units.Unit``. If a unit string cannot be parsed, a warning is issued and the column is left unitless. If the units row contains empty strings or placeholders like ``"-"`` or ``"None"``, those columns are also left unitless.
+
+    Parameters
+    ----------
+    file_path : os.PathLike or str
+        Path to the table file.
+    header_row : int, optional, default 0
+        Zero-based row index containing the column names.
+    units_row : int, optional, default 1
+        Zero-based row index containing the units row, or ``None`` to skip unit parsing.
+    data_start : int, optional, default 2
+        Zero-based row index where table data begin.
+    delimiter : str, optional, default ","
+        Delimiter used in the CSV file.
+
+    Returns
+    -------
+    astropy.table.Table
+        The loaded table.
+
+    Raises
+    ------
+    ValueError
+        If ``units_row`` is provided but is greater than or equal to ``data_start``.
     """
+    if units_row is not None and units_row >= data_start:
+        raise ValueError(
+            f"units_row ({units_row}) must be < data_start ({data_start})"
+        )
     file_path = Path(file_path)
 
     t = Table.read(
         file_path,
-        format=fmt,
+        format='ascii.csv',
+        delimiter=delimiter,
         header_start=header_row,
         data_start=data_start,
     )
 
-    # If no units row is provided, leave the columns unitless.
     if units_row is None:
         for col in t.colnames:
             t[col].unit = None
         return t
 
-    # Read the units row using 0-based indexing.
     with file_path.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f, start=0):
             if i == units_row:
@@ -383,7 +516,9 @@ def open_table(
         if unit_str and unit_str not in {"-", "None"}:
             try:
                 t[col].unit = u.Unit(unit_str)
-            except Exception:
+            except (ValueError, TypeError):
+                warnings.warn(f"Could not parse unit {unit_str!r} for column {col!r}; "
+                            "leaving unitless.", stacklevel=2)
                 t[col].unit = None
         else:
             t[col].unit = None
@@ -401,16 +536,21 @@ def find_spectrum_file(
 ) -> Optional[Path]:
     """Find the first spectrum file matching a night and fibre.
 
-    :param dir_path: Directory to search.
-    :type dir_path: os.PathLike | str
-    :param night: Night substring to match in the filename.
-    :type night: str
-    :param fibre: Fibre substring to match in the filename.
-    :type fibre: str
-    :param suffix: Filename suffix to accept.
-    :type suffix: str
-    :returns: The first matching path, or ``None`` if no file matches.
-    :rtype: pathlib.Path or None
+    Parameters
+    ----------
+    dir_path : os.PathLike or str
+        Directory to search.
+    night : str
+        Night substring to match in the filename.
+    fibre : str
+        Fibre substring to match in the filename. Technicallly the function checks if both ``night`` and ``fibre`` are substrings of the filename, so they can be any distinctive part of the filename as long as they uniquely identify the file. If multiple files match, the first one when sorted by name is returned.
+    suffix : str, optional, default ".csv"
+        Filename suffix to accept. Defaults to ``".csv"``.
+
+    Returns
+    -------
+    pathlib.Path or None
+        The first matching path, or ``None`` if no file matches.
     """
     dir_path = Path(dir_path)
     fibre = str(fibre)
@@ -433,21 +573,37 @@ def load_spectrum(
 ) -> Table:
     """Load a stacked spectrum for a given night and fibre.
 
-    :param dir_path: Directory containing the spectrum files.
-    :type dir_path: os.PathLike | str
-    :param night: Night substring used to locate the file.
-    :type night: str
-    :param fibre: Fibre substring used to locate the file.
-    :type fibre: str
-    :param header_row: Zero-based row index containing the column names.
-    :type header_row: int
-    :param units_row: Zero-based row index containing the units row.
-    :type units_row: int
-    :param data_start: Zero-based row index where table data begin.
-    :type data_start: int
-    :returns: The loaded spectrum table.
-    :rtype: astropy.table.Table
-    :raises FileNotFoundError: If no matching spectrum file is found.
+    .. note::
+
+        - The units_row expect strings that can be parsed by astropy.units.Unit. If a unit string cannot be parsed, a warning is issued and the column is left unitless. If the units row contains empty strings or placeholders like "-" or "None", those columns are also left unitless.
+        - Technicallly the function checks if both ``night`` and ``fibre`` are substrings of the filename, so they can be any distinctive part of the filename as long as they uniquely identify the file. If multiple files match, the first one when sorted by name is returned.
+    
+    Parameters
+    ----------
+    dir_path : os.PathLike or str
+        Directory containing the spectrum files.
+    night : str
+        Night substring used to locate the file.
+    fibre : str
+        Fibre substring used to locate the file.
+    header_row : int, optional, default 0
+        Zero-based row index containing the column names.
+    units_row : int, optional, default 1
+        Zero-based row index containing the units row.
+    data_start : int, optional, default 2
+        Zero-based row index where table data begin.
+
+    Returns
+    -------
+    astropy.table.Table
+        The loaded spectrum table.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no matching spectrum file is found.
+    ValueError
+        If ``units_row`` is provided but is greater than or equal to ``data_start``.
     """
     path = find_spectrum_file(dir_path, night=night, fibre=fibre)
     if path is None:
@@ -461,22 +617,34 @@ def load_ephemeris_summary(
     path: os.PathLike | str,
     *,
     key_column: str = "date_obs",
+    delimiter: str = ",",
 ) -> Dict[str, Dict[str, Any]]:
-    """Read the ephemeris summary table into a nested dictionary.
+    """Read a csv file into a nested dictionary where the key of the outer dictionary is determined by `key_column` and the inner dictionary contains the row values with the column names as key.
 
-    :param path: Path to ``ephemeris_means_by_observation.csv``.
-    :type path: os.PathLike | str
-    :param key_column: Column used as the dictionary key.
-    :type key_column: str
-    :returns: A mapping from observation key to row values.
-    :rtype: dict[str, dict[str, Any]]
-    :raises FileNotFoundError: If the ephemeris summary file does not exist.
+    Parameters
+    ----------
+    path : os.PathLike or str
+        Path to ephemeris csv file.
+    key_column : str, optional, default "date_obs"
+        Column used as the dictionary key.
+    delimiter : str, optional, default ","
+        Delimiter used in the CSV file. Defaults to ``","``.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        A mapping from observation key to row values.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the ephemeris summary file does not exist.
     """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Ephemeris summary file not found at {path!s}.")
 
-    table = Table.read(path, format="ascii.csv")
+    table = Table.read(path, delimiter=delimiter)
     epi: Dict[str, Dict[str, Any]] = {}
 
     for idx, row in enumerate(table):
@@ -491,7 +659,7 @@ def load_ephemeris_summary(
             if hasattr(val, "item"):
                 try:
                     val = val.item()
-                except Exception:
+                except (AttributeError, ValueError):
                     pass
             record[col] = val
         epi[key] = record
@@ -503,75 +671,35 @@ def get_ephemeris_for_night(
     ephemeris: Dict[str, Dict[str, Any]],
     night: str,
 ) -> Dict[str, Any]:
-    """Return the ephemeris record for a single night.
+    """Return the ephemeris record for a single night given the night and the ephemeris dictionary (output of :func:`load_ephemeris_summary`).
 
-    :param ephemeris: Nested ephemeris mapping returned by :func:`load_ephemeris_summary`.
-    :type ephemeris: dict[str, dict[str, Any]]
-    :param night: Night key to retrieve.
-    :type night: str
-    :returns: The matching record, or an empty dictionary if the night is missing.
-    :rtype: dict[str, Any]
+    Parameters
+    ----------
+    ephemeris : dict[str, dict[str, Any]]
+        Nested ephemeris mapping returned by :func:`load_ephemeris_summary`.
+    night : str
+        Night key to retrieve. It can be any distinctive substring of the key used in the ephemeris dictionary.
+
+    Returns
+    -------
+    dict[str, Any]
+        The matching record, or an empty dictionary if the night is missing.
     """
     return dict(ephemeris.get(str(night), {}))
 
 
-def load_pumping_file(
-    night: str,
-    *,
-    directory: os.PathLike | str | None = None,
-    pattern: str = "pumping_{night}.txt",
-    wavelength_col: str = "WAVE",
-    flux_col: str = "FLUX",
-    scale_by_r_au: Optional[float] = None,
-) -> pd.DataFrame:
-    """Load the incident on the comet spectrum for a given night (for instance solar spectrum doppler shifted).
-
-    :param night: Night identifier used to format the file name.
-    :type night: str
-    :param directory: Directory containing the pumping file, or ``None`` to use the packaged data directory.
-    :type directory: os.PathLike | str | None
-    :param pattern: Filename pattern with a ``{night}`` placeholder.
-    :type pattern: str
-    :param wavelength_col: Name of the wavelength column.
-    :type wavelength_col: str
-    :param flux_col: Name of the flux column.
-    :type flux_col: str
-    :param scale_by_r_au: If provided, scale the flux by ``1 / r_au^2``.
-    :type scale_by_r_au: float or None
-    :returns: The pumping spectrum as a DataFrame.
-    :rtype: pandas.DataFrame
-    :raises FileNotFoundError: If the pumping file does not exist.
-    :raises ValueError: If the expected columns are missing.
-    """
-    if directory is None:
-        directory = DATA_DIR
-    directory = Path(directory)
-
-    fname = pattern.format(night=night)
-    path = directory / fname
-    if not path.exists():
-        raise FileNotFoundError(f"Pumping file not found: {path!s}")
-
-    df = pd.read_csv(path, sep=None, engine="python")
-
-    if wavelength_col not in df.columns or flux_col not in df.columns:
-        raise ValueError(
-            f"Pumping file must contain columns "
-            f"'{wavelength_col}' and '{flux_col}'."
-        )
-
-    if scale_by_r_au is not None:
-        df[flux_col] = df[flux_col] * (1.0 / float(scale_by_r_au)) ** 2
-
-    return df
-
-# Helper for the packaged Kurucz irradiance file.
 def get_kurucz_irradiance_path() -> Path:
     """Return the path to the packaged Kurucz solar irradiance file.
 
-    :returns: Path to ``kurucz_irradiance.txt``.
-    :rtype: pathlib.Path
-    :raises FileNotFoundError: If the packaged file is missing.
+    Returns
+    -------
+    pathlib.Path
+        Path to ``kurucz_irradiance.txt``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the packaged file is missing.
     """
     candidate = DATA_DIR / "kurucz_irradiance.txt"
     if not candidate.exists():
@@ -581,12 +709,23 @@ def get_kurucz_irradiance_path() -> Path:
         )
     return candidate
 
-def open_kurucz_irradiance() -> pd.DataFrame:
-    """Load the packaged Kurucz solar irradiance file.
 
-    :returns: A DataFrame with columns ``WAVE`` and ``FLUX``.
-    :rtype: pandas.DataFrame
-    :raises FileNotFoundError: If the packaged Kurucz file cannot be found.
+def open_kurucz_irradiance() -> pd.DataFrame:
+    """Load the packaged Kurucz [2]_ solar irradiance file. See `Kurucz <http://kurucz.harvard.edu/sun/irradiance2005/>`_.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with columns ``WAVE`` in units of :math:`\AA` and ``FLUX`` in units of :math:`\mathrm{erg\,s^{-1}\,cm^{-2}\,\AA^{-1}}`..
+
+    Raises
+    ------
+    FileNotFoundError
+        If the packaged Kurucz file cannot be found.
+
+    References
+    ----------
+        .. [2] Kurucz, R. L. 2005, Memorie della Societa Astronomica Italiana Supplementi, 8, 189. (`link <https://ui.adsabs.harvard.edu/abs/2005MSAIS...8..189K/abstract>`_)
     """
     path = get_kurucz_irradiance_path()
     df = pd.read_csv(path, sep='\s+', names=['nm', 'flux'])
@@ -601,14 +740,20 @@ def open_kurucz_irradiance() -> pd.DataFrame:
     return solar
 
 
-# Helper for the packaged Hall & Anderson UV solar irradiance file.
 def get_hall_anderson_irradiance_path() -> Path:
-    """Return the path to the packaged Hall & Anderson UV solar irradiance file.
+    """Return the path to the packaged Hall & Anderson UV solar irradiance file. See `Hall & Anderson <https://www.ngdc.noaa.gov/stp/space-weather/solar-data/solar-indices/SOLAR_UV/MID_UV/>`_.
 
-    :returns: Path to ``Hall_Anderson.txt``.
-    :rtype: pathlib.Path
-    :raises FileNotFoundError: If the packaged file is missing.
+    Returns
+    -------
+    pathlib.Path
+        Path to ``Hall_Anderson.txt``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the packaged file is missing.
     """
+
     candidate = DATA_DIR / "Hall_Anderson.txt"
     if not candidate.exists():
         raise FileNotFoundError(
@@ -619,21 +764,35 @@ def get_hall_anderson_irradiance_path() -> Path:
 
 
 def open_hall_anderson_irradiance(wave_max_AA: float = 2990.0) -> pd.DataFrame:
-    """Load the packaged Hall & Anderson UV solar irradiance file.
+    """Load the packaged Hall & Anderson [3]_ UV solar irradiance file.
 
     The on-disk file has wavelength in Angstrom and irradiance in
-    photons cm^-2 s^-1 Angstrom^-1. The output is converted to the same units
+    :math:`\mathrm{photons\,s^{-1}\,cm^{-2}\,\AA^{-1}}`. The output is converted to the same units
     as :func:`open_kurucz_irradiance` and truncated at ``wave_max_AA`` so the two
-    spectra concatenate without overlap.
+    spectra concatenate without overlap. See `Hall & Anderson <https://www.ngdc.noaa.gov/stp/space-weather/solar-data/solar-indices/SOLAR_UV/MID_UV/>`_.
 
-    :param wave_max_AA: Upper wavelength cutoff in Angstrom (inclusive). Default
+    Parameters
+    ----------
+    wave_max_AA : float, optional, default 2990.0
+        Upper wavelength cutoff in Angstrom (inclusive). Default
         ``2990.0`` matches the Kurucz file's lower bound.
-    :type wave_max_AA: float
-    :returns: A DataFrame with columns ``WAVE`` (Angstrom) and ``FLUX``
-        (erg s^-1 cm^-2 Angstrom^-1).
-    :rtype: pandas.DataFrame
-    :raises FileNotFoundError: If the packaged Hall & Anderson file cannot be found.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with columns ``WAVE`` in units of :math:`\AA` and ``FLUX``
+        in units of :math:`\mathrm{erg\,s^{-1}\,cm^{-2}\,\AA^{-1}}`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the packaged Hall & Anderson file cannot be found.
+    
+    References
+    ----------
+        .. [3] Hall, L. A. & Anderson, G. P. 1991, J. Geophys. Res., 96, 12,927. (`link <https://agupubs.onlinelibrary.wiley.com/doi/abs/10.1029/91JD01111>`_)
     """
+    
     path = get_hall_anderson_irradiance_path()
     df = pd.read_csv(path, sep=r'\s+', names=['AA', 'photons'])
     wave = np.asarray(df['AA'], dtype=float)
@@ -651,158 +810,70 @@ def open_hall_anderson_irradiance(wave_max_AA: float = 2990.0) -> pd.DataFrame:
 
     return pd.DataFrame({'WAVE': wave, 'FLUX': flux})
 
-Mol = Literal["CN", "C2", "C3", "NH", "CH"]
-CNIso = Literal["12C14N", "13C14N", "12C15N"]
-
-
-def get_default_mol_linelist_path(
-    mol: Mol = "CN",
-    *,
-    isotope: CNIso = "12C14N",
-) -> Path:
-    """Return the packaged default molecular line-list path.
-
-    :param mol: Molecule name.
-    :type mol: Literal["CN", "C2", "C3", "NH", "CH"]
-    :param isotope: CN isotope label used when ``mol`` is ``CN``.
-    :type isotope: Literal["12C14N", "13C14N", "12C15N"]
-    :returns: Path to the packaged molecular line list.
-    :rtype: pathlib.Path
-    :raises FileNotFoundError: If the expected packaged line list is missing.
-    :raises ValueError: If ``mol`` is not supported.
-    """
-    mol = mol.upper()
-
-    if mol == "CN":
-        candidate = DATA_DIR / "CN" / f"{isotope}.txt"
-        if not candidate.exists():
-            raise FileNotFoundError(
-                f"Default CN line list not found: {candidate!s}. "
-                "Place the file in data/CN/ or pass an explicit path."
-            )
-        return candidate
-
-    if mol in {"C2", "C3", "NH", "CH"}:
-        candidate = DATA_DIR / "neowise_lines.txt"
-        if not candidate.exists():
-            raise FileNotFoundError(
-                f"Default NEOWISE molecular line list not found: {candidate!s}. "
-                "Place neowise_lines.txt in data/ or pass an explicit path."
-            )
-        return candidate
-    if 'Fe' in mol:
-        candidate = DATA_DIR / "fe_normalized.csv"
-        if not candidate.exists():
-            raise FileNotFoundError(
-                f"Default Fe atomic line list not found: {candidate!s}. "
-                "Place fe_normalized.csv in data/ or pass an explicit path."
-            )
-        return candidate
-    raise ValueError(f"Unknown mol={mol!r}. Expected one of: CN, C2, C3, NH, CH.")
-
-
-# Atomic line list helpers.
-
-# Minimal name-to-symbol map from hydrogen through yttrium.
-# Accepts either a full name ("hydrogen") or a symbol ("H").
-_NAME_TO_SYMBOL = {
-    "hydrogen": "H", "helium": "He",
-    "lithium": "Li", "beryllium": "Be", "boron": "B", "carbon": "C", "nitrogen": "N", "oxygen": "O",
-    "fluorine": "F", "neon": "Ne",
-    "sodium": "Na", "magnesium": "Mg", "aluminium": "Al", "aluminum": "Al", "silicon": "Si",
-    "phosphorus": "P", "sulfur": "S", "sulphur": "S", "chlorine": "Cl", "argon": "Ar",
-    "potassium": "K", "calcium": "Ca", "scandium": "Sc", "titanium": "Ti", "vanadium": "V",
-    "chromium": "Cr", "manganese": "Mn", "iron": "Fe", "cobalt": "Co", "nickel": "Ni",
-    "copper": "Cu", "zinc": "Zn", "gallium": "Ga", "germanium": "Ge", "arsenic": "As",
-    "selenium": "Se", "bromine": "Br", "krypton": "Kr",
-    "rubidium": "Rb", "strontium": "Sr", "yttrium": "Y", "itrium": "Y",
-}
-
-_SYMBOL_RE = re.compile(r"^[A-Z][a-z]?$")
-
-
-def _normalize_element(element: str) -> str:
-    s = element.strip()
-    if _SYMBOL_RE.match(s):
-        return s  # Already a symbol such as "H", "Fe", or "Y".
-    key = s.lower()
-    if key in _NAME_TO_SYMBOL:
-        return _NAME_TO_SYMBOL[key]
-    raise ValueError(
-        f"Unknown element={element!r}. Provide a symbol (e.g., 'Fe') or a name from hydrogen..yttrium."
-    )
-
-
-def get_default_atomic_linelist_path(element: str) -> Path:
-    """Return the packaged default atomic line-list path.
-
-    :param element: Element name or symbol.
-    :type element: str
-    :returns: Path to the packaged atomic line list.
-    :rtype: pathlib.Path
-    :raises FileNotFoundError: If the expected packaged line list is missing.
-    :raises ValueError: If the element cannot be normalized to a supported symbol.
-    """
-    symbol = _normalize_element(element)
-    candidate = DATA_DIR / "Element_lines" / f"{symbol}.txt"
-    if not candidate.exists():
-        raise FileNotFoundError(
-            f"Default atomic line list not found: {candidate!s}. "
-            "Place the file in data/Element_lines/ or pass an explicit path."
-        )
-    return candidate
-
-
-def print_available_linelist_inventory() -> None:
-    """Print the packaged line-list inventory.
-
-    :returns: ``None``. The inventory is written to standard output.
-    :rtype: None
-    """
-    data_dir = Path(DATA_DIR)
-
-    # Fluorescence defaults currently include CN isotopologues only.
-    cn_dir = data_dir / "CN"
-    cn_files = sorted(cn_dir.glob("*.txt")) if cn_dir.exists() else []
-
-    print("Default available for fluorescence:")
-    if cn_files:
-        for p in cn_files:
-            print(f"  - CN {p.stem}")
-    else:
-        print("  (none found)")
-
-    print("You can also provide a custom line list for fluorescence modeling.")
-
-    # Line plotting includes all available molecular and atomic lists.
-    print("\nAvailable for line plotting:")
-
-    if cn_files:
-        for p in cn_files:
-            print(f"  - [mol] CN {p.stem}")
-
-    neowise = data_dir / "neowise_lines.txt"
-    if neowise.exists():
-        print("  - [mol] NEOWISE (C2, C3, NH, CH)")
-
-    elem_dir = data_dir / "Element_lines"
-    elem_files = sorted(elem_dir.glob("*.txt")) if elem_dir.exists() else []
-    if elem_files:
-        for p in elem_files:
-            print(f"  - [atom] {p.stem}")
-
-    if not (cn_files or neowise.exists() or elem_files):
-        print("  (none found)")
 
 def load_cn_linelist(path_or_text: Union[str, os.PathLike]) -> pd.DataFrame:
-    """Load a Brooke/PGOPHER-style CN line list.
+    r"""Load a Brooke- or Sneden-style CN line list.
 
-    :param path_or_text: Path to the file or the file contents themselves.
-    :type path_or_text: str or os.PathLike
-    :returns: Parsed CN line list as a DataFrame.
-    :rtype: pandas.DataFrame
-    :raises ValueError: If no Brooke-style data lines are found.
+    Parses CN molecular line lists distributed in the fixed-width "machine-readable
+    table" format used by ApJS, as produced by Brooke et al. (2014) [4]_ and
+    Sneden et al. (2014) [5]_. Three isotopologues are supported, each available
+    from the journal's online supplementary materials:
+
+    - `12C14N <https://content.cld.iop.org/journals/0067-0049/210/2/23/revision1/apjs489210t4_mrt.txt>`_
+      (Brooke et al. 2014) — :math:`^{12}\mathrm{C}^{14}\mathrm{N}`
+    - `13C14N <https://content.cld.iop.org/journals/0067-0049/214/2/26/revision1/apjs500517t1_mrt.txt>`_
+      (Sneden et al. 2014) — :math:`^{13}\mathrm{C}^{14}\mathrm{N}`
+    - `12C15N <https://content.cld.iop.org/journals/0067-0049/214/2/26/revision1/apjs500517t2_mrt.txt>`_
+      (Sneden et al. 2014) — :math:`^{12}\mathrm{C}^{15}\mathrm{N}`
+
+    Parameters
+    ----------
+    path_or_text : str or os.PathLike
+        Path to the line-list file, or the file contents as a string.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Parsed line list. Each row corresponds to one rovibronic transition.
+        The columns reproduce the fields of the source machine-readable tables,
+        plus two derived wavelength columns appended at the end:
+
+        Electronic state and vibrational quantum numbers
+
+        * ``eS'`` -- Upper electronic state label (``A``, ``B``, or ``X``).
+        * ``eS''`` -- Lower electronic state label (``A``, ``B``, or ``X``).
+        * ``v'`` -- Upper vibrational quantum number :math:`v'`.
+        * ``v''`` -- Lower vibrational quantum number :math:`v''`.
+
+        Rotational quantum numbers and fine-structure / parity labels
+
+        * ``J'`` -- Upper total angular momentum :math:`J'` (excluding nuclear spin).
+        * ``J''`` -- Lower total angular momentum :math:`J''`.
+        * ``F'`` -- Upper-state spin/parity component: in :math:`A^{2}\Pi`, ``1`` for :math:`\Omega = 1/2`, ``2`` for :math:`\Omega = 3/2`; in :math:`B^{2}\Sigma^{+}` and :math:`X^{2}\Sigma^{+}`, ``1`` for :math:`e`, ``2`` for :math:`f` parity.
+        * ``p'`` -- Upper-state parity / e-f label (``e`` or ``f``).
+        * ``p''`` -- Lower-state parity / e-f label (``e`` or ``f``).
+        * ``N'``, ``N''`` -- Upper and lower :math:`N` quantum numbers as defined in Brooke et al. (2014) [4]_. The ``N'`` column is stored as text in the source file (allowing blank entries) and is coerced to numeric here.
+        * ``Obs`` -- Observed transition wavenumber, in cm\ :sup:`-1`. May be  ``NaN`` for lines without a measured position (predicted-only).
+        * ``Cal`` -- Calculated transition wavenumber from the term-value fit, in cm\ :sup:`-1`.
+        * ``Res`` -- Residual ``Obs - Cal``, in cm\ :sup:`-1`.
+        * ``E''`` -- Lower-state energy :math:`E''` relative to ``v"=0``, in cm\ :sup:`-1`. 
+        * ``A`` -- Einstein :math:`A` coefficient (spontaneous emission rate), in s\ :sup:`-1`.
+        * ``f`` -- Absorption oscillator strength (dimensionless).
+        * ``Des`` -- Transition description from Brooke/Sneden line list [4]_ [5]_.
+        * ``lambda_vac_A_from_Cal`` -- Vacuum wavelength in Å, computed as :math:`10^{8}/\mathrm{Cal}`.
+        * ``lambda_vac_A_from_Obs`` -- Vacuum wavelength in Å, computed as :math:`10^{8}/\mathrm{Obs}`. ``NaN`` where ``Obs`` is missing.
+
+    Raises
+    ------
+    ValueError
+        If no Brooke/Sneden-style data lines are found in the input.
+
+    References
+    ----------
+    .. [4] Brooke, J. S. A., Ram, R. S., Western, C. M., et al. 2014, ApJS, 210, 23 (`link <https://doi.org/10.1088/0067-0049/210/2/23>`_).
+    .. [5] Sneden, C., Lucatello, S., Ram, R. S., Brooke, J. S. A., & Bernath, P. 2014, ApJS, 1050 214, 26 (`link <https://doi.org/10.1088/0067-0049/214/2/26>`_).
     """
+
     colspecs = [
         (0, 1),  (2, 3),  (4, 6),  (7, 9),
         (10, 15), (16, 21),
@@ -820,15 +891,10 @@ def load_cn_linelist(path_or_text: Union[str, os.PathLike]) -> pd.DataFrame:
         "E''", "A", "f", "Des",
     ]
 
-    # Normalize the input so the code can handle both paths and raw text.
     if isinstance(path_or_text, (os.PathLike,)):
-        # Path-like input.
         path_str = os.fspath(path_or_text)
         is_text = False
     elif isinstance(path_or_text, str):
-        # Strings can be either file paths or literal file contents.
-        # If the string looks like multiline content or a Brooke header,
-        # treat it as text; otherwise assume it is a path.
         if "\n" in path_or_text or path_or_text.lstrip().startswith("Title:"):
             is_text = True
             text = path_or_text
@@ -836,7 +902,6 @@ def load_cn_linelist(path_or_text: Union[str, os.PathLike]) -> pd.DataFrame:
             path_str = path_or_text
             is_text = False
     else:
-        # Fallback: interpret anything else as path-like.
         path_str = os.fspath(path_or_text)
         is_text = False
 
@@ -873,158 +938,3 @@ def load_cn_linelist(path_or_text: Union[str, os.PathLike]) -> pd.DataFrame:
 
     return df
 
-_NEOWISE_MOL_MAP = {
-    # Map user-facing molecule names to the token stored in the file.
-    "CN": "CN",
-    "CH": "CH",
-    "NH2": "NH2",
-    "C3": "C_3_",
-    "C2": "C_2_",
-}
-
-
-def _airA_to_vacA(wave_air_A: Union[np.ndarray, float]) -> Union[np.ndarray, float]:
-    """Convert wavelength(s) from air Å to vacuum Å."""
-    return air_to_vac(np.asarray(wave_air_A) * u.AA).to(u.AA).value
-
-
-def load_neowise_linelist(path: Union[str, os.PathLike]) -> pd.DataFrame:
-    """Load a NEOWISE molecular line list.
-
-    :param path: Path to the NEOWISE line-list file.
-    :type path: str or os.PathLike
-    :returns: Parsed NEOWISE table with columns ``Wave``, ``REL_Intensity``, ``MOL``, and ``identifier``.
-    :rtype: pandas.DataFrame
-    """
-    df = {"Wave": [], "REL_Intensity": [], "MOL": [], "identifier": []}
-    path = os.fspath(path)
-
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            parts = [x for x in raw.strip().split(" ") if x != ""]
-            if len(parts) < 3:
-                continue
-            wave = float(parts[0])
-            rel = float(parts[1])
-            mol = parts[2]
-            ident = " ".join(parts[3:]) if len(parts) > 3 else ""
-            df["Wave"].append(wave)
-            df["REL_Intensity"].append(rel)
-            df["MOL"].append(mol)
-            df["identifier"].append(ident)
-
-    return pd.DataFrame(df)
-
-
-def get_linelist_wavelengths_vacuum(
-    species: str,
-    *,
-    # CN selection options.
-    isotope: CNIso = "12C14N",
-    upper_state: Optional[str] = "B",
-    lower_state: Optional[str] = "X",
-    v_upper: Optional[int] = 0,
-    v_lower: Optional[int] = 0,
-    # General selection options.
-    n_lines: Optional[int] = None,
-    path: Optional[Union[str, os.PathLike]] = None,
-) -> list[float]:
-    """Return line-list wavelengths converted to vacuum Angstrom.
-
-    :param species: Species identifier. Supported values include ``CN``, ``C2``, ``C3``, ``NH``, ``NH2``, and ``CH``.
-    :type species: str
-    :param isotope: CN isotope label used when ``species`` is ``CN``.
-    :type isotope: Literal["12C14N", "13C14N", "12C15N"]
-    :param upper_state: Upper electronic state filter for CN.
-    :type upper_state: str or None
-    :param lower_state: Lower electronic state filter for CN.
-    :type lower_state: str or None
-    :param v_upper: Upper vibrational level filter for CN.
-    :type v_upper: int or None
-    :param v_lower: Lower vibrational level filter for CN.
-    :type v_lower: int or None
-    :param n_lines: Optional number of lines to keep after sorting.
-    :type n_lines: int or None
-    :param path: Optional explicit path to the line-list file.
-    :type path: str or os.PathLike or None
-    :returns: Vacuum wavelengths in Angstrom.
-    :rtype: list[float]
-    :raises ValueError: If the selection is empty or the species is unsupported.
-    """
-
-    sp = species.strip()
-    mol_up = sp.upper()
-
-    # CN branch uses Brooke-style line lists.
-    if mol_up == "CN":
-        if path is None:
-            path = get_default_mol_linelist_path("CN", isotope=isotope)
-
-        df = load_cn_linelist(path)
-
-        # Apply the optional CN filters.
-        if upper_state is not None:
-            df = df[df["eS'"] == upper_state]
-        if lower_state is not None:
-            df = df[df["eS''"] == lower_state]
-        if v_upper is not None:
-            df = df[df["v'"] == v_upper]
-        if v_lower is not None:
-            df = df[df["v''"] == v_lower]
-
-        if df.empty:
-            raise ValueError(
-                "CN selection produced no lines. "
-                "Check electronic states or vibrational numbers."
-            )
-
-        # Sort by Einstein A coefficient.
-        df = df.sort_values(by="A", ascending=False)
-
-        if n_lines is not None:
-            df = df.head(int(n_lines))
-
-        waves_vac = df["lambda_vac_A_from_Cal"].astype(float).to_list()
-
-        print(
-            "CN lines: sorted by Einstein A coefficient (descending). "
-            f"Filters: eS'={upper_state}, eS''={lower_state}, "
-            f"v'={v_upper}, v''={v_lower}"
-        )
-
-        return waves_vac
-
-    # The NEOWISE file contains multiple molecules, so filter to the requested one.
-    if mol_up in {"C2", "C3", "NH", "CH", "NH2"}:
-        if path is None:
-            # Any supported NEOWISE molecule resolves to the shared file.
-            path = get_default_mol_linelist_path("C2")
-
-        neowise = load_neowise_linelist(path)
-
-        token = _NEOWISE_MOL_MAP.get(mol_up)
-        if token is None:
-            raise ValueError(f"Unsupported molecule {mol_up!r}. Try CN, CH, NH2, C2, C3.")
-
-        sub = neowise[neowise["MOL"] == token].copy()  # Keep only the requested species.
-        if sub.empty:
-            raise ValueError(f"No lines found for {mol_up} (token={token!r}) in {path!s}.")
-
-        sub = sub.sort_values(by="REL_Intensity", ascending=False)
-        if n_lines is not None:
-            sub = sub.head(int(n_lines))
-
-        waves_vac = _airA_to_vacA(sub["Wave"].astype(float).to_numpy()).tolist()
-        print("NEOWISE lines: sorted by REL_Intensity in the NEOWISE comet (descending).")
-
-        return waves_vac
-
-    # Atomic files are already per element, so no extra filtering is needed.
-    if path is None:
-        path = get_default_atomic_linelist_path(sp)
-
-    atom = pd.read_csv(os.fspath(path), sep='\s+', names=["WAVE", "name", "ion"])
-    waves_vac = _airA_to_vacA(atom["WAVE"].astype(float).to_numpy()).tolist()
-
-    print("Atomic lines: lines from NIST (not completed lists, just for quick plotting).")
-    return waves_vac
