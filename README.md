@@ -2,13 +2,13 @@
 
 Fluorescence modeling and MCMC fitting for cometary spectra.
 
-**Documentation:** [https://cometspec.readthedocs.io/en/latest/](https://cometspec.readthedocs.io/en/latest/)
+- **Documentation:** [https://cometspec.readthedocs.io/en/latest/](https://cometspec.readthedocs.io/en/latest/)
+- **Source code:** [https://github.com/baltasarluco/CometSpec](https://github.com/baltasarluco/CometSpec)
 
 A usage example is provided in `WorkFlow_Example/` as a Jupyter notebook called `WorkFlow.ipynb`, and `Test_getting_started.ipynb` are the cells on the documentation.
 
-If you use this code, please cite: *waiting for publication.*
+For citation information, see the [Citation page in the documentation](https://cometspec.readthedocs.io/en/latest/citation.html).
 
-Repository DOI: *waiting for DOI.*  
 Data DOI: [10.5281/zenodo.19801570](https://doi.org/10.5281/zenodo.19801570)
 
 
