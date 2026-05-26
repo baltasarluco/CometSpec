@@ -1,22 +1,47 @@
+# Python build artifacts
 .venv/
+venv/
+env/
 build/
 dist/
 *.egg-info/
-.DS_Store
-docs/_build/
-
-# IDE settings
-.vscode/
-
-# Python bytecode
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Large data files (exceed GitHub limits)
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / tool caches
+.vscode/
+.idea/
+.ruff_cache/
+.claude/
+
+# Sphinx build output
+docs/_build/
+docs/_autosummary/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Package output plots (regenerated on each run)
+WorkFlow_Example/mcmc_fit_*.pdf
+WorkFlow_Example/Example_plots/
+
+# Observation data — not distributed with the package
+WorkFlow_Example/Output_spectras/
+WorkFlow_Example/Pumping_files/
+WorkFlow_Example/MCMC_results/
+WorkFlow_Example/Ephemeris/
+
+# Large / generated data files
 *.trans
 *.states
 *.pkl
 WorkFlow_Example/13C2__8states.trans
-WorkFlow_Example/MCMC_results/example1.pkl
-WorkFlow_Example/Output_spectras/
-WorkFlow_Example/Example_plots/
+WorkFlow_Example/13C2__8states.states
+WorkFlow_Example/13C2.h5
+    

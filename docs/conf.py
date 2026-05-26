@@ -4,12 +4,12 @@ import os
 import sys
 
 # -- Path setup ---------------------------------------------------------------
-sys.path.insert(0, os.path.abspath("../cometspec"))
+sys.path.insert(0, os.path.abspath(".."))
 
 # -- Project information ------------------------------------------------------
 project = "CometSpec"
 author = "Baltasar Luco"
-copyright = "2024, Baltasar Luco"
+copyright = "2026, Baltasar Luco"
 release = "0.1.0"
 
 # -- General configuration ----------------------------------------------------
@@ -20,13 +20,53 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
+    "sphinx.ext.doctest",
+    "sphinx_copybutton",
+    "matplotlib.sphinxext.plot_directive",
 ]
+
+# -- plot_directive ----------------------------------------------------------
+plot_include_source = True
+plot_html_show_source_link = False
+plot_html_show_formats = False
+plot_formats = [("png", 110)]
+
+# -- mathjax ------------------------------------------------------------------
+# `\AA` is a text-mode LaTeX command, undefined in MathJax 3 math mode.
+# Define it (and a couple of other text-mode shortcuts) as math macros.
+mathjax3_config = {
+    "tex": {
+        "macros": {
+            "AA": r"{\mathring{A}}",
+        },
+    },
+}
+
+# -- sphinx-copybutton --------------------------------------------------------
+# Strip ">>> ", "... " and shell "$ " prompts when copying.
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regex = True
+copybutton_only_copy_prompt_lines = False
+
+# -- Syntax highlighting (Pygments) -------------------------------------------
+# Furo supports separate light/dark Pygments styles. These distinguish
+# keywords, builtins, booleans (True/False/None), function names, class names,
+# strings, and numbers with distinct colors.
+pygments_style = "tango"
+pygments_dark_style = "dracula"
 
 autosummary_generate = True
 autodoc_member_order = "bysource"
-autodoc_typehints = "description"
-napoleon_google_docstyle = True
+autodoc_typehints = "none"
 napoleon_numpy_docstyle = True
+napoleon_numpy_docstring   = True
+napoleon_google_docstring  = False   # pick one; mixing is messy
+napoleon_use_param         = False  # render Parameters as inline bullets: param (type) – desc
+napoleon_use_rtype         = False  # merge return type inline with Returns description
+napoleon_use_ivar          = True   # render Attributes as :ivar:
+napoleon_attr_annotations  = True   # pick up PEP 526 type hints
+napoleon_preprocess_types  = True   # convert type strings to cross-reference links
+
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
@@ -48,19 +88,31 @@ html_css_files = ["custom.css"]
 
 html_theme_options = {
     "light_css_variables": {
-        "color-brand-primary": "#4A90D9",
-        "color-brand-content": "#4A90D9",
-        "color-admonition-background": "rgba(74, 144, 217, 0.1)",
+        "color-brand-primary": "#059669",
+        "color-brand-content": "#059669",
+        "color-admonition-background": "rgba(5, 150, 105, 0.1)",
+        "color-api-name": "#2D6FB8",
+        "color-api-pre-name": "#2D6FB8",
+        "color-api-background": "#e6e6e6",
+        "color-api-background-hover": "#d9d9d9",
+        "color-inline-code-background": "#ececec",
+        "color-link--hover": "#960505",
     },
     "dark_css_variables": {
-        "color-brand-primary": "#7EB8F7",
-        "color-brand-content": "#7EB8F7",
+        "color-brand-primary": "#10b981",
+        "color-brand-content": "#10b981",
         "color-background-primary": "#0D1117",
         "color-background-secondary": "#161B22",
         "color-background-border": "#30363D",
         "color-foreground-primary": "#C9D1D9",
-        "color-foreground-secondary": "#8B949E",
-        "color-admonition-background": "rgba(126, 184, 247, 0.1)",
+        "color-foreground-secondary": "#DEDFDF",
+        "color-admonition-background": "rgba(16, 185, 129, 0.1)",
+        "color-api-name": "#7EB8F7",
+        "color-api-pre-name": "#7EB8F7",
+        "color-api-background": "#3b3b3bb8",
+        "color-api-background-hover": "#5c5c5cb8",
+        "color-inline-code-background": "#3b3b3bb8",
+        "color-link--hover": "#00fff7",
     },
     "sidebar_hide_name": False,
     "navigation_with_keys": True,

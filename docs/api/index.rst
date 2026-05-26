@@ -1,7 +1,7 @@
 API Reference
 =============
 
-CometSpec is organized into three modules:
+CometSpec is organized into the following modules:
 
 .. list-table::
    :widths: 25 75
@@ -13,11 +13,14 @@ CometSpec is organized into three modules:
      - High-level ``FluorescenceModel`` class — the main entry point for
        building models and running MCMC fits.
    * - :doc:`modeling`
-     - Core engine: line-list normalization, rate matrices, level populations,
-       g-factors, spectrum synthesis, and MCMC fitting.
+     - Core engine roadmap. Split across :doc:`linelist`, :doc:`rates`,
+       :doc:`collisions`, and :doc:`mcmc`. ``cometspec.modeling`` itself is a
+       backwards-compatible re-export shim.
    * - :doc:`helper`
-     - File I/O utilities, solar irradiance loading, line-list access,
-       slit-loss corrections, and seeing calculations.
+     - Simple utilities for common tasks as loading data and to calculate slit-losses errors (which ``FluorescenceModel`` uses).
+   * - :doc:`config`
+     - Optional grouped-configuration dataclasses
+       (``FluorescenceModelConfig``, ``MCMCFitConfig``).
 
 .. toctree::
    :maxdepth: 2
@@ -26,3 +29,4 @@ CometSpec is organized into three modules:
    fluorescence
    modeling
    helper
+   config

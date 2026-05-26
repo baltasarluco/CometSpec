@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-150 -150 300 300" width="600" height="600">
+  <title>Minimalist comet — swirl body, twin tails</title>
+  <defs>
+    <radialGradient id="head-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="35%"  stop-color="#BFF1FF" stop-opacity="0.85"/>
+      <stop offset="70%"  stop-color="#4FC3FF" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#4FC3FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#7BE3FF" stop-opacity="0.5"/>
+      <stop offset="60%"  stop-color="#4FC3FF" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#4FC3FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tail-grad" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%"   stop-color="#7BE3FF" stop-opacity="0.95"/>
+      <stop offset="55%"  stop-color="#4FC3FF" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#1E5F8C" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="tail-grad-soft" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%"   stop-color="#7BE3FF" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#4FC3FF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Jet cone gradient: bright at cusp, transparent at wide end -->
+    <radialGradient id="jet-A" cx="0%" cy="100%" r="100%" gradientUnits="boundingBox">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#4FC3FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="jet-B" cx="100%" cy="100%" r="100%" gradientUnits="boundingBox">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#7BE3FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="jet-C" cx="50%" cy="100%" r="100%" gradientUnits="boundingBox">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#BFF1FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="jet-D" cx="0%" cy="50%" r="100%" gradientUnits="boundingBox">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#4FC3FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Halo — slow pulse -->
+  <circle r="28" fill="url(#halo)">
+    <animate attributeName="opacity" values="0.6;1;0.6" dur="6s" repeatCount="indefinite"/>
+    <animate attributeName="r"       values="26;32;26"  dur="6s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- Twin tails — slow wave -->
+  <g>
+    <animateTransform attributeName="transform" type="rotate"
+                      values="0 0 0;4 0 0;0 0 0;-4 0 0;0 0 0"
+                      dur="18s" calcMode="spline"
+                      keySplines="0.4 0 0.6 1;0.4 0 0.6 1;0.4 0 0.6 1;0.4 0 0.6 1"
+                      repeatCount="indefinite"/>
+    <path d="M 0 0 C -50 -15 -110 -25 -180 -10 C -110 -18 -55 -8 0 0 Z"
+          fill="url(#tail-grad)"/>
+    <path d="M 0 0 C -40 8 -90 14 -140 6 C -90 10 -45 4 0 0 Z"
+          fill="url(#tail-grad-soft)" opacity="0.7"/>
+  </g>
+
+  <!-- Outburst cones — cusp at nucleus (0,0), fan opens outward -->
+  <!-- Cone A: upper-right fan -->
+  <path d="M 0,0 L 5,-22 L 18,-16 Z" fill="url(#jet-A)" opacity="0">
+    <animate attributeName="opacity" values="0;0.85;0.80;0"
+             keyTimes="0;0.08;0.65;1" dur="3.5s" begin="3s;19s;37s"/>
+  </path>
+
+  <!-- Cone B: upper-left fan -->
+  <path d="M 0,0 L -18,-16 L -5,-22 Z" fill="url(#jet-B)" opacity="0">
+    <animate attributeName="opacity" values="0;0.8;0.75;0"
+             keyTimes="0;0.08;0.65;1" dur="3.2s" begin="9s;26s;45s"/>
+  </path>
+
+  <!-- Cone C: straight up fan -->
+  <path d="M 0,0 L -7,-23 L 7,-23 Z" fill="url(#jet-C)" opacity="0">
+    <animate attributeName="opacity" values="0;0.9;0.80;0"
+             keyTimes="0;0.08;0.65;1" dur="3.8s" begin="15s;32s;52s"/>
+  </path>
+
+  <!-- Cone D: right fan -->
+  <path d="M 0,0 L 22,-7 L 22,7 Z" fill="url(#jet-D)" opacity="0">
+    <animate attributeName="opacity" values="0;0.75;0.70;0"
+             keyTimes="0;0.08;0.65;1" dur="3.5s" begin="22s;41s;62s"/>
+  </path>
+
+  <!-- Nucleus — slow continuous spin (rendered on top) -->
+  <g>
+    <animateTransform attributeName="transform" type="rotate"
+                      from="0 0 0" to="360 0 0"
+                      dur="22s" repeatCount="indefinite"/>
+    <circle r="13" fill="url(#head-glow)"/>
+    <path d="M 0 -10 A 10 10 0 0 1 0 10 A 5 5 0 0 1 0 0 A 5 5 0 0 0 0 -10 Z"
+          fill="#FFFFFF"/>
+    <circle cx="0" cy="-5" r="1.6" fill="#7BE3FF"/>
+    <circle cx="0" cy="5"  r="1.6" fill="#FFFFFF" opacity="0.9"/>
+  </g>
+</svg>

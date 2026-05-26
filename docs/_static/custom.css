@@ -1,5 +1,70 @@
 /* CometSpec custom styles */
 
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
+
+.sidebar-brand-text,
+.sidebar-brand > .sidebar-brand-text,
+a.sidebar-brand .sidebar-brand-text {
+    font-family: 'Bebas Neue', sans-serif !important;
+    letter-spacing: 3px;
+    font-size: 2.4rem !important;
+}
+
+/* Remove underline from links in body content (keep on hover for affordance) */
+article a,
+article a:visited {
+    text-decoration: none;
+}
+article a:hover {
+    text-decoration: underline;
+}
+
+/* Mirror left-sidebar hover effect on the right "On this page" TOC */
+.toc-tree {
+    /* Extend the .toc-tree box leftward via negative margin while keeping
+       its content visually in place via matching padding. The hover shadow
+       (-100vw on the link) is then clipped here, so it stops a little
+       short of the column's left vertical separator. Tweak the value to
+       move closer to or further from the line. */
+
+    overflow: hidden;
+}
+.toc-tree a {
+    display: block;
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.toc-tree a:hover {
+    background: var(--color-sidebar-item-background--hover);
+    color: var(--color-sidebar-link-text--hover);
+    text-decoration: none;
+    /* -100vw guarantees the colored area reaches the column's left edge
+       regardless of viewport width; the parent's overflow:hidden clips it
+       cleanly at the vertical separator. */
+    box-shadow: -100vw 0 0 0 var(--color-sidebar-item-background--hover);
+}
+
+/* Comet animation — nucleus above "spectra", tail to top-left */
+.hero-comet {
+    position: absolute;
+    top: 52%;
+    left: 85%;
+    width: 160%;
+    transform: translate(-50%, -50%) rotate(45deg);
+    opacity: 0.55;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Keep all hero text above the comet */
+.hero-section h1,
+.hero-section .hero-tagline,
+.hero-section .hero-badges {
+    position: relative;
+    z-index: 2;
+}
+
 /* Hero section styling */
 .hero-section {
     text-align: center;
@@ -30,8 +95,9 @@
 }
 
 .hero-section h1 {
+    font-family: 'Bebas Neue', sans-serif !important;
     color: #C9D1D9 !important;
-    font-size: 2.8rem !important;
+    font-size: 5rem !important;
     margin-bottom: 0.3rem !important;
     font-weight: 700 !important;
     letter-spacing: 2px;
@@ -114,6 +180,10 @@ div.highlight pre {
 dl.py dt {
     border-radius: 4px;
     padding: 0.4rem 0.6rem;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+dl.py > dt:hover {
+    background: var(--color-api-background-hover);
 }
 
 /* Responsive tweaks */
