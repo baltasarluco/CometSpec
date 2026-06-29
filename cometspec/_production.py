@@ -114,8 +114,8 @@ def compute_production_rate(
         else:
             logN_chain = np.array([float(model.logN)], dtype=float)
         q50, qerr = compute_from_logN(logN_chain)
-        model.q = q50
-        model.q_err = qerr
+        model.logQ = q50
+        model.logQ_err = qerr
         return q50, qerr
 
     # multi-iso
@@ -131,8 +131,8 @@ def compute_production_rate(
         q50, qerr = compute_from_logN(logN_chain)
         out[iso] = (q50, qerr)
 
-    model.q = {k: v[0] for k, v in out.items()}
-    model.q_err = {k: v[1] for k, v in out.items()}
+    model.logQ = {k: v[0] for k, v in out.items()}
+    model.logQ_err = {k: v[1] for k, v in out.items()}
     return out
 
 
@@ -141,7 +141,7 @@ def add_slit_loss_error(
     *,
     lambda_nm: float,
     aperture: dict,
-    correct: str = "both",  # "q", "logN", or "both"
+    correct: str = "both",  # "logQ", "logN", or "both"
     eps_min_arcsec_500: float = 0.7,
     eps_max_arcsec_500: float = 1.2,
     zmin_deg: float = 45.0,
@@ -149,24 +149,24 @@ def add_slit_loss_error(
     n_points: int = 2000,
 ) -> Union[float, Dict[str, float]]:
     """Implementation of FluorescenceModel.add_slit_loss_error."""
-    if correct not in ("q", "logN", "both"):
-        raise ValueError("correct must be 'q', 'logN', or 'both'.")
+    if correct not in ("logQ", "logN", "both"):
+        raise ValueError("correct must be 'logQ', 'logN', or 'both'.")
 
-    do_q    = correct in ("q", "both")
+    do_logQ = correct in ("logQ", "both")
     do_logN = correct in ("logN", "both")
 
-    if do_q and (model.q is None or model.q_err is None):
-        raise ValueError("self.q and self.q_err must be set before correcting q. Recomended to fit first or set it manually to 0")
+    if do_logQ and (model.logQ is None or model.logQ_err is None):
+        raise ValueError("self.logQ and self.logQ_err must be set before correcting logQ. Recomended to fit first or set it manually to 0")
     if do_logN and (model.logN is None or model.logN_err is None) and (model.logN_by_iso is None or model.logN_err_by_iso is None):
         raise ValueError("self.logN and self.logN_err must be set before correcting logN.")
-    if do_q and model.q_seeing_corrected:
-        print('q was already corrected, skipping.')
-        do_q = False
+    if do_logQ and model.logQ_seeing_corrected:
+        print('logQ was already corrected, skipping.')
+        do_logQ = False
     if do_logN and model.logN_seeing_corrected:
         print('logN was already corrected, skipping.')
         do_logN = False
 
-    if not do_q and not do_logN:
+    if not do_logQ and not do_logN:
         return
 
     _slitloss_kwargs = dict(
@@ -182,10 +182,10 @@ def add_slit_loss_error(
     iso_list = model._iso_list()
 
     if len(iso_list) == 1:
-        if do_q:
-            model.q_err = helper.add_slit_loss_error_scalar(float(model.q_err), **_slitloss_kwargs
+        if do_logQ:
+            model.logQ_err = helper.add_slit_loss_error_scalar(float(model.logQ_err), **_slitloss_kwargs
             )
-            model.q_seeing_corrected = True
+            model.logQ_seeing_corrected = True
         if do_logN:
             model.logN_err = np.array([
                 helper.add_slit_loss_error_scalar(float(model.logN_err[0]), **_slitloss_kwargs
@@ -197,15 +197,15 @@ def add_slit_loss_error(
         return
 
     # multi-iso
-    if not isinstance(model.q, dict) or not isinstance(model.q_err, dict):
-        raise ValueError("For multi-isotopologue models, self.q and self.q_err must be dicts keyed by iso.")
+    if not isinstance(model.logQ, dict) or not isinstance(model.logQ_err, dict):
+        raise ValueError("For multi-isotopologue models, self.logQ and self.logQ_err must be dicts keyed by iso.")
 
     new_errs: Dict[str, float] = {}
     for iso in iso_list:
-        if do_q:
-            if iso not in model.q or iso not in model.q_err:
-                raise KeyError(f"Missing q/q_err for iso='{iso}'.")
-            new_errs[iso] = helper.add_slit_loss_error_scalar(float(model.q_err[iso]), **_slitloss_kwargs
+        if do_logQ:
+            if iso not in model.logQ or iso not in model.logQ_err:
+                raise KeyError(f"Missing logQ/logQ_err for iso='{iso}'.")
+            new_errs[iso] = helper.add_slit_loss_error_scalar(float(model.logQ_err[iso]), **_slitloss_kwargs
             )
         if do_logN:
             model.logN_err_by_iso[iso] = np.array([
@@ -215,9 +215,9 @@ def add_slit_loss_error(
                 ),
             ])
 
-    if do_q:
-        model.q_err = new_errs
-        model.q_seeing_corrected = True
+    if do_logQ:
+        model.logQ_err = new_errs
+        model.logQ_seeing_corrected = True
     if do_logN:
         model.logN_seeing_corrected = True
     return
@@ -293,7 +293,7 @@ def compute_production_rate_from_profile(
         iso = iso_list[0]
         chain = get_logN_chain(iso) if use_samples else np.array([float(model.logN)])
         q50, qerr = compute_from_logN(chain)
-        model.q, model.q_err = q50, qerr
+        model.logQ, model.logQ_err = q50, qerr
         return q50, qerr
 
     # --- multi-isotopologue ---
@@ -307,6 +307,6 @@ def compute_production_rate_from_profile(
             chain = np.array([float(model.logN_by_iso[iso])])
         out[iso] = compute_from_logN(chain)
 
-    model.q     = {k: v[0] for k, v in out.items()}
-    model.q_err = {k: v[1] for k, v in out.items()}
+    model.logQ     = {k: v[0] for k, v in out.items()}
+    model.logQ_err = {k: v[1] for k, v in out.items()}
     return out

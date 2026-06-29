@@ -547,7 +547,7 @@ def load_default_transitions(
     line_paths: dict[str, str] | None = None,
 ) -> dict[str, pd.DataFrame]:
     
-    """Load and normalize packaged default transitions per isotopologue. The options are **"12C2", "12C13C", "13C2", "12C14N", "13C14N", "12C15N", "Fe".**
+    r"""Load and normalize packaged default transitions per isotopologue. The options are **"12C2", "12C13C", "13C2", "12C14N", "13C14N", "12C15N", "Fe".**
     For CN if the isotopologue is not found it will fall back to "12C14N". Any string with Fe on it will load the fe_normalized.csv file. For C2 if the isotopologue is not found it will fail.
     If CN is choosen, the systems to include can be given as a parameter. Default system is BX(0,0) and AX(Δv=+1), but this can be changed with the ``systems`` argument.
     The options for ``systems`` is list containing one or more of the following str:
@@ -562,11 +562,44 @@ def load_default_transitions(
     - "ax(dv=3)", "ax_dv3": AX(Δv=±3) only
     - 'xx': all X-X transitions
 
-    At the end the references of each line list can be found [1]_ [2]_ [3]_ [4]_ [5]_. Additional filers to the line list were applied and are explained in [6]_.
+    At the end the references of each line list can be found [1]_ [2]_ [3]_ [4]_ [5]_.
     
     .. note::
         Rows on the line lists with missing or invalid values in any of the necessary columns are dropped.
     
+    .. important::
+        These are intrinsic filters applied to the default line lists, so lines with values
+        beyond these filters will not be retrieved for the default isotopologues, even if the
+        corresponding model or function parameters are set.
+
+        * For :math:`\rm CN`, the default line lists are the ones from [1]_ and [2]_, where
+          the available systems are those described above. Check the respective references to
+          see how they were built. We did not apply an intrinsic :math:`A_{ul}` cut. To use the
+          full line lists, you will need to set the corresponding parameters when calling the
+          function.
+        * For :math:`\rm C_2`, the default line list is the recommended
+          `ExoMol <https://www.exomol.com/data/molecules/C2/>`_ compilation
+          [3]_ [4]_. The following selection criteria were applied: wavelengths
+          in the range :math:`2000`--:math:`10000\,\unicode{x212B}`, upper-level
+          energies :math:`< 30\,000\ \mathrm{cm}^{-1}`, vibrational quantum
+          number :math:`v < 5`, rotational quantum number :math:`N < 50`, and
+          only the :math:`a\,^1\Pi_u - x\,^1\Sigma_g^+`,
+          :math:`b\,^3\Sigma_g^- - a\,^3\Pi_u`,
+          :math:`d\,^3\Pi_g - a\,^3\Pi_u`,
+          :math:`d\,^3\Pi_g - c\,^3\Sigma_u^+`,
+          :math:`a\,^3\Pi_u - x\,^1\Sigma_g^+`, and
+          :math:`c\,^3\Sigma_u^+ - x\,^1\Sigma_g^+` transitions.
+          The minimum intrinsic :math:`A_{ul}` is :math:`10^{3}` for
+          :math:`^{12}\mathrm{C}^{13}\mathrm{C}` and :math:`^{12}\mathrm{C}_2`, and
+          :math:`10^{-10}` for :math:`^{13}\mathrm{C}_2`. Note that building models with a
+          small :math:`A_{\min}` (i.e. including most of the transitions) is computationally
+          expensive.
+        * For :math:`\rm Fe`, we adopt the line list of [5]_. We retrieved all
+          transitions in the :math:`2000`--:math:`10000\,\unicode{x212B}` range
+          and retained those with :math:`A_{ul} > 10^{3}\ \mathrm{s}^{-1}` and
+          upper-level energies below :math:`40\,000\ \mathrm{cm}^{-1}`. Note that there is an
+          intrinsic :math:`A_{ul}` cut of :math:`10^{3}\ \mathrm{s}^{-1}`.
+          
     Parameters
     ----------
     isotopologues : str or Sequence[str], optional, default "12C14N"
@@ -596,7 +629,6 @@ def load_default_transitions(
     .. [3] Yurchenko, S. N., Szabó, I., Pyatenko, E., & Tennyson, J. 2018, MNRAS, 480, 3397 (`link <https://doi.org/10.1093/mnras/sty2050>`__).
     .. [4] McKemmish, L. K., Syme, A.-M., Borsovszky, J., et al. 2020, MNRAS, 497, 1081 (`link <https://doi.org/10.1093/mnras/staa1954>`__).
     .. [5] van Hoof, P. A. M. 2018, Galaxies, 6, 63 (`link <https://doi.org/10.3390/galaxies6020063>`__).
-    .. [6] Our Publication (To fill uppon acceptance).
     """
     iso_list = _as_list(isotopologues)
     out: dict[str, pd.DataFrame] = {}

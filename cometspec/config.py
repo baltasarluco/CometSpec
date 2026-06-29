@@ -107,8 +107,8 @@ class FluorescenceModelConfig:
 
     logN: Any = UNSET
     logN_by_iso: Any = UNSET
-    logQ: Any = UNSET
-    logQ_by_iso: Any = UNSET
+    f_col: Any = UNSET
+    f_col_by_iso: Any = UNSET
     T: Any = UNSET
     T_by_iso: Any = UNSET
     v_kms: Any = UNSET
@@ -168,8 +168,8 @@ class MCMCFitConfig:
     velocity_kms: Any = UNSET
     delta_lambda_A: Any = UNSET
 
-    init_logQ: Any = UNSET
-    init_logQ_by_iso: Any = UNSET
+    init_f_col: Any = UNSET
+    init_f_col_by_iso: Any = UNSET
     init_T: Any = UNSET
     init_T_by_iso: Any = UNSET
     init_v_kms: Any = UNSET

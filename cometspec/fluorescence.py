@@ -17,7 +17,7 @@ Notes
 -----
 - Multi-isotopologue fitting is supported; when more than one isotopologue
   is active, ``logN`` is replaced by per-isotopologue ``logN_{iso}`` keys
-  (and likewise for ``logQ_{iso}`` if collisions are sampled per iso). If not all the isotopologues have their own ``logN_{iso}`` key, the missing ones fall back to ``logN``; the same applies to ``logQ``.
+  (and likewise for ``f_col_{iso}`` if collisions are sampled per iso). If not all the isotopologues have their own ``logN_{iso}`` key, the missing ones fall back to ``logN``; the same applies to ``f_col``.
 - :meth:`FluorescenceModel.save` and :meth:`FluorescenceModel.load` provide
   a way to save the models as pickled files. They can be loaded later in the case the user wants to fit just one long MCMC run and then build the models afterwards.
 - Check :func:`cometspec.linelist.load_default_transitions` for default supported isotopologue, and the default line lists that are loaded when ``linelists`` is not provided and their corresponding references.
@@ -53,7 +53,7 @@ class FluorescenceModel:
 
     IMPORTANT:
     When ``fit_mcmc`` calls ``modeling.mcmc_fitting``, fallback values for
-    parameters that are not sampled are taken from this instance (e.g. ``self.logQ``,
+    parameters that are not sampled are taken from this instance (e.g. ``self.f_col``,
     ``self.T``, ``self.v_kms``, ``self.dlam``) and passed explicitly.
 
     The object exposes a stable set of attributes, even before fitting.
@@ -75,8 +75,8 @@ class FluorescenceModel:
 
     - ``logN`` (:class:`float` or :obj:`None`) -- :math:`\log_{10}` column density in molecules cm\ :sup:`-2`.
     - ``logN_by_iso`` (``dict[str, float] or None``) -- Per-isotopologue :math:`\log_{10}` column density. Same units as above. Falls back to ``logN`` for isotopologues not in this dict.
-    - ``logQ`` (:class:`float` or :obj:`None`) -- :math:`\log_{10}` collisional rate in s\ :sup:`-1`.
-    - ``logQ_by_iso`` (``dict[str, float] or None``) -- Per-isotopologue :math:`\log_{10}` collisional rate. Same units as above. Falls back to ``logQ`` for isotopologues not in this dict.
+    - ``f_col`` (:class:`float` or :obj:`None`) -- Collisional rate defined as :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`, where the same downward rate :math:`C_{ul}` is assumed for every upper-to-lower pair included in the collision scaffold.
+    - ``f_col_by_iso`` (``dict[str, float] or None``) -- Per-isotopologue :math:`f_{\rm col}`. Same definition and units as above. Falls back to ``f_col`` for isotopologues not in this dict.
     - ``T`` (:class:`float` or :obj:`None`) -- Kinetic temperature in K.
     - ``T_by_iso`` (``dict[str, float] or None``) -- Per-isotopologue kinetic temperature in K. Falls back to ``T`` for isotopologues not in this dict.
     - ``v_kms`` (:class:`float` or :obj:`None`) -- Emission-frame Doppler velocity shift in km/s.
@@ -156,9 +156,9 @@ class FluorescenceModel:
 
     **Derived production-rate fields** (set by :meth:`compute_production_rate`):
 
-    - ``q`` (``float or dict[str, float] or None``) -- :math:`\log_{10}` production rate(s).
-    - ``q_err`` (``float or dict or None``) -- 1-sigma uncertainty on ``q``.
-    - ``q_seeing_corrected`` (:class:`bool`) -- Whether ``q`` has been corrected for seeing losses.
+    - ``logQ`` (``float or dict[str, float] or None``) -- :math:`\log_{10}` production rate(s).
+    - ``logQ_err`` (``float or dict or None``) -- 1-sigma uncertainty on ``logQ``.
+    - ``logQ_seeing_corrected`` (:class:`bool`) -- Whether ``logQ`` has been corrected for seeing losses.
     - ``logN_seeing_corrected`` (:class:`bool`) -- Whether ``logN`` has been corrected for seeing losses.
     """
 
@@ -185,8 +185,8 @@ class FluorescenceModel:
         ratio: Optional[float] = None,
         logN: Optional[float] = 11.0,
         logN_by_iso: Optional[Dict[str, float]] = None,
-        logQ: Optional[float] = None,
-        logQ_by_iso: Optional[Dict[str, float]] = None,
+        f_col: Optional[float] = None,
+        f_col_by_iso: Optional[Dict[str, float]] = None,
         T: Optional[float] = 300.0,
         T_by_iso: Optional[Dict[str, float]] = None,
         v_kms: Optional[float] = 0.0,
@@ -212,7 +212,7 @@ class FluorescenceModel:
         :meth:`_synthesize_model` to populate model products.
 
         .. note::
-            If multiple isotopologues are provided, it is recommended to use the format `<parameter>_<iso>` for each isotopologue instead of ``<parameter>`` (``logN``, ``logQ``, ``T``, ``v_kms``, ``dlam``).
+            If multiple isotopologues are provided, it is recommended to use the format `<parameter>_<iso>` for each isotopologue instead of ``<parameter>`` (``logN``, ``f_col``, ``T``, ``v_kms``, ``dlam``).
 
         Parameters
         ----------
@@ -251,11 +251,16 @@ class FluorescenceModel:
             Default column density ``log10(N / cm^-2)`` used for synthesis and fallback behavior.
         logN_by_iso : dict[str, float], optional, default None
             Optional per-isotopologue ``log10(N / cm^-2)`` map. Any isotopologue missing from the map falls back to ``logN``.
-        logQ : float, optional, default None
-            Collisional rate (log10 scale) default fallback.
-            ``Q`` is in s^-1.
-        logQ_by_iso : dict[str, float], optional, default None
-            Optional per-isotopologue ``log10(Q/s^-1)`` map. When provided, each isotopologue uses its own collisional rate; any isotopologue missing from the map falls back to ``logQ``.
+        f_col : float, optional, default None
+            Default collisional rate, defined as
+            :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`,
+            where the same downward rate :math:`C_{ul}` is assumed for every
+            upper-to-lower pair included in the collision scaffold.
+        f_col_by_iso : dict[str, float], optional, default None
+            Optional per-isotopologue :math:`f_{\rm col}` map (same definition
+            as ``f_col``). When provided, each isotopologue uses its own
+            collisional rate; any isotopologue missing from the map falls back
+            to ``f_col``.
         T : float, optional, default 300.0
             Kinetic temperature in Kelvin. Global fallback for all isotopologues.
         T_by_iso : dict[str, float], optional, default None
@@ -377,10 +382,10 @@ class FluorescenceModel:
                 logN = config.logN
             if config.logN_by_iso is not UNSET:
                 logN_by_iso = config.logN_by_iso
-            if config.logQ is not UNSET:
-                logQ = config.logQ
-            if config.logQ_by_iso is not UNSET:
-                logQ_by_iso = config.logQ_by_iso
+            if config.f_col is not UNSET:
+                f_col = config.f_col
+            if config.f_col_by_iso is not UNSET:
+                f_col_by_iso = config.f_col_by_iso
             if config.T is not UNSET:
                 T = config.T
             if config.T_by_iso is not UNSET:
@@ -440,8 +445,8 @@ class FluorescenceModel:
 
         self.logN = logN
         self.logN_by_iso = dict(logN_by_iso) if logN_by_iso is not None else None
-        self.logQ = logQ
-        self.logQ_by_iso = dict(logQ_by_iso) if logQ_by_iso is not None else None
+        self.f_col = f_col
+        self.f_col_by_iso = dict(f_col_by_iso) if f_col_by_iso is not None else None
         self.T = T
         self.T_by_iso = dict(T_by_iso) if T_by_iso is not None else None
         self.v_kms = v_kms
@@ -449,8 +454,8 @@ class FluorescenceModel:
         self.dlam = dlam
         self.dlam_by_iso = dict(dlam_by_iso) if dlam_by_iso is not None else None
 
-        self.q: Optional[Union[float, Dict[str, float]]] = None
-        self.q_err: Optional[Union[float, Dict[str, float]]] = None
+        self.logQ: Optional[Union[float, Dict[str, float]]] = None
+        self.logQ_err: Optional[Union[float, Dict[str, float]]] = None
         self.logN_err: Optional[np.ndarray] = None
         self.logN_err_by_iso: Optional[Dict[str, np.ndarray]] = None
 
@@ -516,7 +521,7 @@ class FluorescenceModel:
             else:
                 raise ValueError(f"Unsupported lsf_method: {lsf_method}")
 
-        self.q_seeing_corrected: bool = False
+        self.logQ_seeing_corrected: bool = False
         self.logN_seeing_corrected: bool = False
 
         self.priors: Dict[str, Tuple[float, float]] = {}
@@ -667,7 +672,7 @@ class FluorescenceModel:
         summaries, and keeps pumping-shift settings synchronized.
 
         .. note::
-            Priors consist on a dict mapping parameter name to a (min, max) tuple defining the uniform prior range for that parameter. The possible keys are: ``"logN"``, ``"logQ"``, ``"T"``, ``"dlam"``, ``"v_kms"``, 'logN_<isotopologue>', 'logQ_<isotopologue>', 'T_<isotopologue>', 'dlam_<isotopologue>', 'v_kms_<isotopologue>' (any iso not found falls back to <parameter>) and lsf priors, ``sigma``, ``sigma1``, ``sigma2``, ``sigma_G``, ``fwhm_L``, ``ratio``.
+            Priors consist on a dict mapping parameter name to a (min, max) tuple defining the uniform prior range for that parameter. The possible keys are: ``"logN"``, ``"f_col"``, ``"T"``, ``"dlam"``, ``"v_kms"``, 'logN_<isotopologue>', 'f_col_<isotopologue>', 'T_<isotopologue>', 'dlam_<isotopologue>', 'v_kms_<isotopologue>' (any iso not found falls back to <parameter>) and lsf priors, ``sigma``, ``sigma1``, ``sigma2``, ``sigma_G``, ``fwhm_L``, ``ratio``.
 
         Parameters
         ----------
@@ -712,7 +717,7 @@ class FluorescenceModel:
                ``n_cores`` is ``None``/``1``.
         priors : dict[str, tuple[float, float]], optional, default None
             Prior ranges for sampled parameters. If ``None``, uses
-            stored priors or ``{"logN": (9.0, 15.0), "logQ": (-5.0, 0.0), "T": (10.0, 1000.0)}``.
+            stored priors or ``{"logN": (9.0, 15.0), "f_col": (-5.0, 0.0), "T": (10.0, 1000.0)}``.
         lsf : Callable[[numpy.ndarray], numpy.ndarray], optional, default None
             Optional custom LSF callable for fit-time synthesis.
         lsf_method : str, optional, default None
@@ -809,7 +814,7 @@ class FluorescenceModel:
         linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame], Sequence[pd.DataFrame]]] = None,
         logN: Optional[float] = None,
         logN_by_iso: Optional[Dict[str, float]] = None,
-        logQ: Optional[float] = None,
+        f_col: Optional[float] = None,
         T: Optional[float] = None,
         T_by_iso: Optional[Dict[str, float]] = None,
         v_kms: Optional[float] = None,
@@ -855,8 +860,11 @@ class FluorescenceModel:
             Optional global ``log10(N/cm^2)`` update.
         logN_by_iso : dict[str, float], optional, default None
             Optional per-isotopologue ``log10(N/cm^2)`` update.
-        logQ : float, optional, default None
-            Optional ``logQ`` update.
+        f_col : float, optional, default None
+            Optional ``f_col`` update, defined as
+            :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`,
+            with the same downward rate :math:`C_{ul}` assumed for every
+            upper-to-lower pair included in the collision scaffold.
         T : float, optional, default None
             Optional global temperature update.
         T_by_iso : dict[str, float], optional, default None
@@ -915,7 +923,7 @@ class FluorescenceModel:
         Side effects:
 
         - Always calls :meth:`_synthesize_model`.
-        - Resets ``self.q`` and ``self.q_err`` to ``None`` when ``logN``,
+        - Resets ``self.logQ`` and ``self.logQ_err`` to ``None`` when ``logN``,
           ``logN_by_iso``, or isotopologue selection changes.
         """
         from . import _synthesis
@@ -926,7 +934,7 @@ class FluorescenceModel:
             linelists=linelists,
             logN=logN,
             logN_by_iso=logN_by_iso,
-            logQ=logQ,
+            f_col=f_col,
             T=T,
             T_by_iso=T_by_iso,
             v_kms=v_kms,
@@ -1075,7 +1083,7 @@ class FluorescenceModel:
         - Updates model grid and best/median model arrays.
         - Rebuilds ``self.model_by_iso`` entries through per-isotopologue temporary
           model synthesis.
-        - Resets ``self.q``/``self.q_err`` when fitted ``logN`` values are present.
+        - Resets ``self.logQ``/``self.logQ_err`` when fitted ``logN`` values are present.
         """
         from . import _fitting
         return _fitting.update_from_result(
@@ -1146,7 +1154,7 @@ class FluorescenceModel:
 
         Notes
         -----
-        Stores computed values in ``self.q`` and ``self.q_err``.
+        Stores computed values in ``self.logQ`` and ``self.logQ_err``.
         """
         from . import _production
         return _production.compute_production_rate(
@@ -1172,9 +1180,9 @@ class FluorescenceModel:
         zmax_deg: float = 45.0,
         n_points: int = 2000,
     ) -> Union[float, Dict[str, float]]:
-        """Add seeing/slit-loss systematic uncertainty to ``q_err``, ``logN_err``, or both.
+        """Add seeing/slit-loss systematic uncertainty to ``logQ_err``, ``logN_err``, or both.
 
-        This method can be called after :meth:`compute_production_rate` (for ``correct="q"`` or ``correct="both"``) or before (for ``correct="logN"``). Each quantity tracks its own correction state, so they can be corrected independently or together. The final error is the quadrature sum of the original error and a slit-loss error. Check :func:`cometspec.helper.add_slit_loss_error_scalar` for details on the slit-loss error calculation.
+        This method can be called after :meth:`compute_production_rate` (for ``correct="logQ"`` or ``correct="both"``) or before (for ``correct="logN"``). Each quantity tracks its own correction state, so they can be corrected independently or together. The final error is the quadrature sum of the original error and a slit-loss error. Check :func:`cometspec.helper.add_slit_loss_error_scalar` for details on the slit-loss error calculation.
 
         Parameters
         ----------
@@ -1184,9 +1192,9 @@ class FluorescenceModel:
             Aperture geometry definition dictionary. Same format as
             :meth:`compute_production_rate`.
         correct : str, optional, default "both"
-            Which quantity to correct. One of ``"q"`` (default),
-            ``"logN"``, or ``"both"``. Note that ``"q"`` requires ``self.q`` and
-            ``self.q_err`` to be set; ``"logN"`` requires ``self.logN`` and
+            Which quantity to correct. One of ``"logQ"`` (default),
+            ``"logN"``, or ``"both"``. Note that ``"logQ"`` requires ``self.logQ`` and
+            ``self.logQ_err`` to be set; ``"logN"`` requires ``self.logN`` and
             ``self.logN_err`` to be set.
         eps_min_arcsec_500 : float, optional, default 0.7
             Minimum seeing FWHM at 500 nm and zenith, in arcsec.
@@ -1207,19 +1215,19 @@ class FluorescenceModel:
         Raises
         ------
         ValueError
-            If ``correct`` is not one of ``"q"``, ``"logN"``, ``"both"``;
-            or if the required attributes (``self.q``, ``self.q_err``, ``self.logN``,
+            If ``correct`` is not one of ``"logQ"``, ``"logN"``, ``"both"``;
+            or if the required attributes (``self.logQ``, ``self.logQ_err``, ``self.logN``,
             ``self.logN_err``) are not set for the requested correction.
         KeyError
-            If an isotopologue key is missing from ``self.q``,
-            ``self.q_err``, ``self.logN_by_iso``, or ``self.logN_err_by_iso``.
+            If an isotopologue key is missing from ``self.logQ``,
+            ``self.logQ_err``, ``self.logN_by_iso``, or ``self.logN_err_by_iso``.
 
         Notes
         -----
         Side effects:
 
-        - Updates ``self.q_err`` / ``self.q_err_by_iso`` and sets
-          ``self.q_seeing_corrected = True`` when correcting ``q``.
+        - Updates ``self.logQ_err`` / ``self.logQ_err_by_iso`` and sets
+          ``self.logQ_seeing_corrected = True`` when correcting ``logQ``.
         - Updates ``self.logN_err`` / ``self.logN_err_by_iso`` and sets
           ``self.logN_seeing_corrected = True`` when correcting ``logN``.
         - If a quantity was already corrected, prints a warning and skips it
@@ -1356,7 +1364,7 @@ class FluorescenceModel:
         """Serialize model state to a pickle file.
 
         The saved state includes constructor kwargs, MCMC products, and derived
-        production-rate fields ``q`` and ``q_err``. If the model uses a custom
+        production-rate fields ``logQ`` and ``logQ_err``. If the model uses a custom
         callable LSF (``lsf_method == "Given"``), that callable is not serialized.
 
         Parameters

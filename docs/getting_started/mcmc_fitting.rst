@@ -38,6 +38,14 @@ Fluorescence model you have the option to specify the columns in your DataFrame 
 contain the wavelength, flux, error, and continuum data; you can change them using the
 ``wave_col``, ``flux_col``, ``error_col``, and ``continuum_col`` parameters.
 
+.. note::
+
+   The collisional parameter ``f_col`` (and per-iso variants
+   ``f_col_<iso>``) is defined as
+   :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`, where the
+   same downward rate :math:`C_{ul}` is assumed for every upper-to-lower pair
+   included in the collision scaffold.
+
 .. code-block:: python
 
     from cometspec.helper import open_kurucz_irradiance, open_hall_anderson_irradiance
@@ -54,7 +62,7 @@ contain the wavelength, flux, error, and continuum data; you can change them usi
         isotopologues="12C14N",
         systems=['BX', 'AX_dv1'],
         sigma=0.05,
-        logQ=-1,
+        f_col=-1,
         logN=14.0,
         T=200,
         v_kms=0,
@@ -144,7 +152,7 @@ avoid confusion.
         isotopologues=["12C14N", "13C14N"],
         systems=['BX', 'AX_dv1'],
         sigma=0.05,
-        logQ_by_iso={"12C14N": -1, "13C14N": -2},
+        f_col_by_iso={"12C14N": -1, "13C14N": -2},
         logN_by_iso={"12C14N": 14.0, "13C14N": 13.5},
         T=200,
         v_kms=0,
@@ -203,7 +211,7 @@ avoid confusion.
    :width: 100%
 
 In this example ``T`` is shared between both isotopologues, while ``logN`` has separate priors and fitted values.
-``logQ_by_iso`` is not present in the priors, so it is fixed at the values given in the model constructor.
+``f_col_by_iso`` is not present in the priors, so it is fixed at the values given in the model constructor.
 
 ----
 
@@ -228,7 +236,7 @@ with the physical parameters (while being consistent with the ``lsf_method``).
     print('Fitted sigma:', model.median_params.get('sigma'))
     print('Fitted sigma:', model.sigma)
 
-The full list of fittable parameters is: ``logN``, ``logQ``, ``T``,
+The full list of fittable parameters is: ``logN``, ``f_col``, ``T``,
 ``v_kms``, ``dlam``, their per-isotopologue variants
 (e.g. ``logN_13C14N``), and LSF parameters ``sigma``, ``sigma1``,
 ``sigma2``, ``sigma_G``, ``fwhm_L``, ``ratio`` depending on the chosen
@@ -249,7 +257,7 @@ it will be used for the fit, so you can ignore the LSF priors.
                             lsf=lsf,
                             A_min=1e3,
                             logN = 14,
-                            logQ= -1,
+                            f_col= -1,
                             T=300.0,
                             window=(3865.0, 3885.0),
                             wave_col="WAVE",
@@ -286,7 +294,7 @@ default). With ``fig_file`` you can specify a custom path prefix for the corner 
 
     priors = {
         'logN': (5, 20),
-        'logQ': (-4, 1),
+        'f_col': (-4, 1),
         'T': (10, 400),
     }
 
@@ -300,7 +308,7 @@ default). With ``fig_file`` you can specify a custom path prefix for the corner 
         logN=12.0,
         v_kms=0.0,
         T=300.0,
-        logQ=-1.0,
+        f_col=-1.0,
         isotopologues=['12C14N'],
         wave_col="WAVE",
         flux_col="FLUX",

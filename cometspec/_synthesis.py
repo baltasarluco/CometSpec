@@ -34,7 +34,7 @@ def apply_update_model(
     linelists: Optional[Union[pd.DataFrame, Dict[str, pd.DataFrame], Sequence[pd.DataFrame]]] = None,
     logN: Optional[float] = None,
     logN_by_iso: Optional[Dict[str, float]] = None,
-    logQ: Optional[float] = None,
+    f_col: Optional[float] = None,
     T: Optional[float] = None,
     T_by_iso: Optional[Dict[str, float]] = None,
     v_kms: Optional[float] = None,
@@ -81,8 +81,8 @@ def apply_update_model(
         model.logN = float(logN)
     if logN_by_iso is not None:
         model.logN_by_iso = dict(logN_by_iso)
-    if logQ is not None:
-        model.logQ = float(logQ)
+    if f_col is not None:
+        model.f_col = float(f_col)
     if T is not None:
         model.T = float(T)
     if T_by_iso is not None:
@@ -162,8 +162,8 @@ def apply_update_model(
 
     # NEW: if logN or isotope selection changed, production rate is stale
     if (logN is not None) or (logN_by_iso is not None) or (isotopologues is not None):
-        model.q = None
-        model.q_err = None
+        model.logQ = None
+        model.logQ_err = None
 
     if omega is not None:
         model.omega = omega
@@ -275,19 +275,19 @@ def synthesize_model(model: "FluorescenceModel") -> None:
         else:
             dlam_i = 0.0
 
-        # logQ fallback mirrors mcmc._logQ_for_iso (one unified branch,
+        # f_col fallback mirrors mcmc._f_col_for_iso (one unified branch,
         # independent of how many isotopologues are in iso_list).
-        logQ_i = None
-        if model.logQ_by_iso is not None and iso in model.logQ_by_iso:
+        f_col_i = None
+        if model.f_col_by_iso is not None and iso in model.f_col_by_iso:
             try:
-                logQ_i = float(model.logQ_by_iso[iso])
+                f_col_i = float(model.f_col_by_iso[iso])
             except TypeError:
-                logQ_i = None
-        elif model.logQ is not None:
-            logQ_i = float(model.logQ)
+                f_col_i = None
+        elif model.f_col is not None:
+            f_col_i = float(model.f_col)
 
-        if logQ_i is not None and T_i is not None and model.include_rotations:
-            Q_lin = 10.0 ** logQ_i
+        if f_col_i is not None and T_i is not None and model.include_rotations:
+            Q_lin = 10.0 ** f_col_i
             if np.isfinite(Q_lin) and Q_lin > 0.0:
                 Cup_work = np.empty_like(coll_scaf.get("iu", np.array([], dtype=int)), dtype=float)
                 apply_collisions_inplace_fast(M, coll_scaf, Q=Q_lin, T=T_i, Cup_work=Cup_work)
