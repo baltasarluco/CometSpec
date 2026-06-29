@@ -64,7 +64,7 @@ class FluorescenceModel:
 
     - ``data`` (:class:`Any` or :obj:`None`) -- Observed spectrum container (DataFrame or astropy Table).
     - ``window`` (``tuple[float, float]`` or :obj:`None`) -- Wavelength interval ``(min_A, max_A)`` used for synthesis.
-    - ``pumping`` (:class:`Any`) -- Solar irradiance spectrum used to evaluate :math:`J_\\nu`. Must have WAVE and FLUX columns in :math:`\mathrm{Å}` and :math:`\mathrm{erg}\,\mathrm{s}^{-1}\,\mathrm{cm}^{-2}\,\mathrm{Å}^{-1}` units.
+    - ``pumping`` (:class:`Any`) -- Solar irradiance spectrum used to evaluate :math:`J_\nu`. Must have WAVE and FLUX columns in :math:`\mathrm{Å}` and :math:`\mathrm{erg}\,\mathrm{s}^{-1}\,\mathrm{cm}^{-2}\,\mathrm{Å}^{-1}` units.
     - ``isotopologues`` (:class:`str` or ``Sequence[str]``) -- Isotopologue label(s). Default labels are ``"12C14N"``, ``"13C14N"``, ``"12C15N"``, ``"12C13C"``, ``"12C2"``, ``"13C2"`` or any label containing ``Fe``. They can also be custom labels for custom line lists.
     - ``systems`` (:class:`str` or ``Sequence[str]`` or :obj:`None`) -- CN system selector(s). Check :func:`cometspec.linelist.normalize_cn_systems_arg` for supported values.
     - ``linelists`` (:class:`pandas.DataFrame` or ``dict[str, pandas.DataFrame]`` or ``Sequence[pandas.DataFrame]`` or :obj:`None`) -- Custom normalized line list(s).
@@ -98,8 +98,8 @@ class FluorescenceModel:
 
     **Pumping controls**
 
-    - ``pumping_v_kms`` (:class:`float`) -- Velocity shift in km/s applied to line wavelengths when sampling :math:`J_\\nu`.
-    - ``pumping_dlam_A`` (:class:`float`) -- Additive wavelength shift in Å applied to line wavelengths when sampling :math:`J_\\nu`.
+    - ``pumping_v_kms`` (:class:`float`) -- Velocity shift in km/s applied to line wavelengths when sampling :math:`J_\nu`.
+    - ``pumping_dlam_A`` (:class:`float`) -- Additive wavelength shift in Å applied to line wavelengths when sampling :math:`J_\nu`.
 
     .. note::
 
