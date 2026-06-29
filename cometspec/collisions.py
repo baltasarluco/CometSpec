@@ -495,6 +495,11 @@ def precompute_collision_scaffold_fast(*args, **kwargs) -> dict:
 def apply_collisions_inplace(M: np.ndarray, scaffold: Dict[str, np.ndarray], *, Q: float, T: float) -> np.ndarray:
     """Apply rotational-collision rates to a matrix in place.
 
+    The downward rate :math:`Q \equiv C_{ul}` (in s\ :sup:`-1`) is assumed
+    identical for every upper-to-lower pair listed in ``scaffold``. It
+    corresponds to :math:`10^{f_{\rm col}}` where the user-facing parameter
+    is :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`.
+
     Parameters
     ----------
     M : numpy.ndarray
@@ -502,7 +507,8 @@ def apply_collisions_inplace(M: np.ndarray, scaffold: Dict[str, np.ndarray], *, 
     scaffold : dict[str, numpy.ndarray]
         Collision scaffold containing ``iu``, ``il``, ``gu``, ``gl``, and ``dE``.
     Q : float
-        Downward collision rate scale.
+        Downward collision rate :math:`C_{ul}` in s\ :sup:`-1`, applied
+        uniformly to every upper-to-lower pair in ``scaffold``.
     T : float
         Kinetic temperature in K.
 
@@ -543,6 +549,11 @@ def apply_collisions_inplace_fast(
 ) -> np.ndarray:
     """Apply collisions in place using cached arrays and reusable buffers.
 
+    Same semantics as :func:`apply_collisions_inplace`: the downward rate
+    :math:`Q \equiv C_{ul}` (in s\ :sup:`-1`) is assumed identical for every
+    upper-to-lower pair in ``scaffold``, and corresponds to :math:`10^{f_{\rm col}}`
+    with :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`.
+
     Parameters
     ----------
     M : numpy.ndarray
@@ -550,7 +561,8 @@ def apply_collisions_inplace_fast(
     scaffold : dict[str, numpy.ndarray]
         Collision scaffold with ``dE_over_k_K`` and ``gu_over_gl``.
     Q : float
-        Downward collision rate scale.
+        Downward collision rate :math:`C_{ul}` in s\ :sup:`-1`, applied
+        uniformly to every upper-to-lower pair in ``scaffold``.
     T : float
         Kinetic temperature in K.
     Cup_work : numpy.ndarray

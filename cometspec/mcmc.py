@@ -183,8 +183,8 @@ class _LnProbCallable:
         lsf_method,
         omega,
         include_rotations,
-        init_logQ,
-        init_logQ_by_iso,
+        init_f_col,
+        init_f_col_by_iso,
         init_T,
         init_T_by_iso,
         init_v_kms,
@@ -211,8 +211,8 @@ class _LnProbCallable:
         self.lsf_method = lsf_method
         self.omega = omega
         self.include_rotations = include_rotations
-        self.init_logQ = init_logQ
-        self.init_logQ_by_iso = init_logQ_by_iso
+        self.init_f_col = init_f_col
+        self.init_f_col_by_iso = init_f_col_by_iso
         self.init_T = init_T
         self.init_T_by_iso = init_T_by_iso
         self.init_v_kms = init_v_kms
@@ -245,19 +245,19 @@ class _LnProbCallable:
             return None
         return make_lsf(pars, self.lsf_method)
 
-    def _logQ_for_iso(self, iso: str, pars: Dict[str, float]) -> Optional[float]:
-        key = f"logQ_{iso}"
+    def _f_col_for_iso(self, iso: str, pars: Dict[str, float]) -> Optional[float]:
+        key = f"f_col_{iso}"
         if key in pars:
             return float(pars[key])
-        if "logQ" in pars:
-            return float(pars["logQ"])
-        if self.init_logQ_by_iso is not None and iso in self.init_logQ_by_iso:
+        if "f_col" in pars:
+            return float(pars["f_col"])
+        if self.init_f_col_by_iso is not None and iso in self.init_f_col_by_iso:
             try:
-                return float(self.init_logQ_by_iso[iso])
+                return float(self.init_f_col_by_iso[iso])
             except TypeError:
                 return None
-        if self.init_logQ is not None:
-            return float(self.init_logQ)
+        if self.init_f_col is not None:
+            return float(self.init_f_col)
         return None
 
     def _T_for_iso(self, iso: str, pars: Dict[str, float]) -> float:
@@ -348,13 +348,13 @@ class _LnProbCallable:
             M = C["M_work"]
             np.copyto(M, C["M_rad"])
 
-            logQ_i = self._logQ_for_iso(iso, pars)
+            f_col_i = self._f_col_for_iso(iso, pars)
             T_i = self._T_for_iso(iso, pars)
             v_kms_i = self._v_kms_for_iso(iso, pars)
             dlam_i = self._dlam_for_iso(iso, pars)
 
-            if logQ_i is not None:
-                Q_i = 10.0 ** logQ_i if np.isfinite(logQ_i) else 0.0
+            if f_col_i is not None:
+                Q_i = 10.0 ** f_col_i if np.isfinite(f_col_i) else 0.0
                 if Q_i > 0.0 and self.include_rotations:
                     apply_collisions_inplace_fast(
                         M, C["coll_scaf"], Q=Q_i, T=T_i, Cup_work=C["Cup_work"]
@@ -444,8 +444,8 @@ def mcmc_fitting(
     delta_lambda_A: float = 0.0,
 
     # NOTE: these are fallbacks for parameters not present in priors
-    init_logQ: Optional[float] = None,
-    init_logQ_by_iso: Optional[Dict[str, Optional[float]]] = None,
+    init_f_col: Optional[float] = None,
+    init_f_col_by_iso: Optional[Dict[str, Optional[float]]] = None,
     init_T: float = 300.0,
     init_T_by_iso: Optional[Dict[str, float]] = None,
     init_v_kms: float = 0.0,
@@ -495,14 +495,14 @@ def mcmc_fitting(
         - ``"ax(dv=2)"``/``"ax_dv2"`` -> ``["AX_dv2"]``
         - ``"ax(dv=3)"``/``"ax_dv3"`` -> ``["AX_dv3"]``
     - emcee ``nwalkers=50`` and ``nsteps=1000`` by default.
-    - Collisions are gated by ``logQ``: if neither a per-iso ``logQ_{iso}`` nor a shared ``logQ`` prior is given it will fall back to ``init_logQ``, and if ``init_logQ`` or ``init_logQ_by_iso`` are also not given for an isotopologue, that isotopologue is treated as collisionless. Other collision controls default to ``include_deltaJ0_parity_mix=True`` (to allow :math:`\Delta J = 0`) and ``require_X_only_for_rot=True`` (to enable just collisions to the lower electronic state found).
+    - Collisions are gated by ``f_col``, defined as :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`, where the same downward rate :math:`C_{ul}` is assumed for every upper-to-lower pair included in the collision scaffold. If neither a per-iso ``f_col_{iso}`` nor a shared ``f_col`` prior is given it will fall back to ``init_f_col``, and if ``init_f_col`` or ``init_f_col_by_iso`` are also not given for an isotopologue, that isotopologue is treated as collisionless. Other collision controls default to ``include_deltaJ0_parity_mix=True`` (to allow :math:`\Delta J = 0`) and ``require_X_only_for_rot=True`` (to enable just collisions to the lower electronic state found).
     - It is recommended to set explicitly ``include_rotations=False`` if no collisions is the desired behavior.
     - Pumping-shift controls default to ``velocity_kms=0.0`` and ``delta_lambda_A=0.0``. These values are used when computing :math:`J_\\nu` for the radiative rates and they are different from ``v_kms`` and ``dlam`` parameters of a model which are shifts of the output spectrum lines.
     - Fallback parameter values starts with ``init_`` check the default behavior here if this function is used directly, check them in :class:`cometspec.fluorescence.FluorescenceModel` if this function is used via the model's default fitting method.
     - If parameters are not present in the priors, they will fall to the ``init_`` default values (if provided) or to the hardcoded defaults in the model_flux function (e.g. T=300K, v_kms=0, etc). This means that if you want to fit for a parameter but don't provide a prior for it, it will not be fitted and instead will use the fallback value. This allows you to control which parameters are fitted and which are fixed without having to change the code of this function.
     
     .. note::
-            Priors consist on a dict mapping parameter name to a (min, max) tuple defining the uniform prior range for that parameter. The possible keys are: ``"logN"``, ``"logQ"``, ``"T"``, ``"dlam"``, ``"v_kms"``, 'logN_<isotopologue>', 'logQ_<isotopologue>', 'T_<isotopologue>', 'dlam_<isotopologue>', 'v_kms_<isotopologue>' (any iso not found falls back to <parameter>) and lsf priors, ``sigma``, ``sigma1``, ``sigma2``, ``sigma_G``, ``fwhm_L``, ``ratio``.
+            Priors consist on a dict mapping parameter name to a (min, max) tuple defining the uniform prior range for that parameter. The possible keys are: ``"logN"``, ``"f_col"``, ``"T"``, ``"dlam"``, ``"v_kms"``, 'logN_<isotopologue>', 'f_col_<isotopologue>', 'T_<isotopologue>', 'dlam_<isotopologue>', 'v_kms_<isotopologue>' (any iso not found falls back to <parameter>) and lsf priors, ``sigma``, ``sigma1``, ``sigma2``, ``sigma_G``, ``fwhm_L``, ``ratio``.
 
     Parameters
     ----------
@@ -602,14 +602,19 @@ def mcmc_fitting(
         Velocity shift used when evaluating pumping J_nu.
     delta_lambda_A : float, optional, default 0.0
         Additive wavelength shift used when evaluating pumping J_nu.
-    init_logQ : float, optional, default None
-        Fallback ``logQ`` value used by every isotopologue when no
-        ``logQ`` prior is sampled and no per-iso entry is given. ``None``
-        disables collisions for any isotopologue not covered by ``init_logQ_by_iso``.
-    init_logQ_by_iso : dict[str, float or None], optional, default None
-        Per-isotopologue fallback ``logQ`` map. Each value may
-        be ``None`` to force that isotopologue to be collisionless. Isotopologues
-        not present in the map fall back to ``init_logQ``.
+    init_f_col : float, optional, default None
+        Fallback ``f_col`` value used by every isotopologue when no
+        ``f_col`` prior is sampled and no per-iso entry is given. ``None``
+        disables collisions for any isotopologue not covered by ``init_f_col_by_iso``.
+        ``f_col`` is defined as
+        :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`,
+        with the same downward rate :math:`C_{ul}` assumed for every
+        upper-to-lower pair included in the collision scaffold.
+    init_f_col_by_iso : dict[str, float or None], optional, default None
+        Per-isotopologue fallback ``f_col`` map (same definition as
+        ``init_f_col``). Each value may be ``None`` to force that isotopologue
+        to be collisionless. Isotopologues not present in the map fall back to
+        ``init_f_col``.
     init_T : float, optional, default 300.0
         Global fallback temperature when ``T`` is not sampled and no per-iso entry is given.
     init_T_by_iso : dict[str, float], optional, default None
@@ -738,10 +743,10 @@ def mcmc_fitting(
             velocity_kms = config.velocity_kms
         if config.delta_lambda_A is not UNSET:
             delta_lambda_A = config.delta_lambda_A
-        if config.init_logQ is not UNSET:
-            init_logQ = config.init_logQ
-        if config.init_logQ_by_iso is not UNSET:
-            init_logQ_by_iso = config.init_logQ_by_iso
+        if config.init_f_col is not UNSET:
+            init_f_col = config.init_f_col
+        if config.init_f_col_by_iso is not UNSET:
+            init_f_col_by_iso = config.init_f_col_by_iso
         if config.init_T is not UNSET:
             init_T = config.init_T
         if config.init_T_by_iso is not UNSET:
@@ -845,13 +850,13 @@ def mcmc_fitting(
     def _iso_can_collide(iso: str) -> bool:
         if is_atomic_species(iso):
             return False
-        if f"logQ_{iso}" in priors:
+        if f"f_col_{iso}" in priors:
             return True
-        if "logQ" in priors:
+        if "f_col" in priors:
             return True
-        if init_logQ_by_iso is not None and iso in init_logQ_by_iso:
-            return init_logQ_by_iso[iso] is not None
-        return init_logQ is not None
+        if init_f_col_by_iso is not None and iso in init_f_col_by_iso:
+            return init_f_col_by_iso[iso] is not None
+        return init_f_col is not None
 
     iso_collides = {iso: _iso_can_collide(iso) for iso in trans_by_iso.keys()}
 
@@ -862,10 +867,10 @@ def mcmc_fitting(
         missing = sorted(list(req - set(df_trans.columns)))
         if missing:
             raise ValueError(
-                f"Isotopologue {iso!r} would use collisions (logQ provided) but its linelist "
+                f"Isotopologue {iso!r} would use collisions (f_col provided) but its linelist "
                 f"is missing required columns: {missing}. Provide them via "
                 "from_user_linelist(... lower_*_col=..., E_lower_cm1_col=...), or set its "
-                "logQ to None to disable collisions for this isotopologue."
+                "f_col to None to disable collisions for this isotopologue."
             )
 
     cache: dict[str, dict[str, Any]] = {}
@@ -959,8 +964,8 @@ def mcmc_fitting(
         lsf_method=lsf_method,
         omega=omega,
         include_rotations=include_rotations,
-        init_logQ=init_logQ,
-        init_logQ_by_iso=init_logQ_by_iso,
+        init_f_col=init_f_col,
+        init_f_col_by_iso=init_f_col_by_iso,
         init_T=init_T,
         init_T_by_iso=init_T_by_iso,
         init_v_kms=init_v_kms,
@@ -1114,7 +1119,7 @@ def mcmc_fitting(
 
     param_labels = {
         "logN": r"$\mathrm{log}_{10}(N)$",
-        "logQ": r"$\log_{10}$(Q$_{\rm{col}}$ / [s$^{-1}$])",
+        "f_col": r"$f_{\rm col}$",
         "T": r"$T_{kin}$ [K]",
         "v_kms": r"$\Delta$v [km s$^{-1}$]",
         "dlam": r"$\Delta \lambda$ [Å]",
@@ -1126,14 +1131,20 @@ def mcmc_fitting(
         "ratio": r"Ratio",
         }
     if iso_list and len(iso_list) > 1:
+        def _iso_label(k: str, iso: str) -> str:
+            if k == "logN":
+                return rf"$\mathrm{{log}}_{{10}}(N_{{{iso}}})$"
+            if k == "f_col":
+                return rf"$f_{{\rm col,\,{iso}}}$"
+            return f"{param_labels[k]}_{iso}"
         param_lab_by_iso = {
-            f'{k}_{iso}': (rf"$\mathrm{{log}}_{{10}}(N_{{{iso}}})$" if k == "logN" else f"{param_labels[k]}_{iso}")
+            f'{k}_{iso}': _iso_label(k, iso)
             for k in param_labels for iso in iso_list
         }
         param_labels = {**param_labels, **param_lab_by_iso}
 
     _logN_units_note = r"$N\ [\mathrm{molecules\ cm}^{-2}]$"
-    _has_logN = any(k == "logN" or k.startswith("logN_") for k in param_keys)
+    _f_col_units_note = r"$f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})$"
     if make_plots:
         trace_ylabel_fontsize = max(13 - 0.4 * ndim, 8)
         trace_tick_fontsize = max(11 - 0.3 * ndim, 7)
@@ -1153,17 +1164,21 @@ def mcmc_fitting(
                 axes[j].text(0.98, 0.97, _logN_units_note, fontsize=trace_ylabel_fontsize,
                              va='top', ha='right', transform=axes[j].transAxes,
                              bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='none'))
+            elif name == "f_col" or name.startswith("f_col_"):
+                axes[j].text(0.98, 0.97, _f_col_units_note, fontsize=trace_ylabel_fontsize,
+                             va='top', ha='right', transform=axes[j].transAxes,
+                             bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='none'))
         axes[-1].set_xlabel("iteration", fontsize=trace_ylabel_fontsize)
         fig.tight_layout(h_pad=0.3)
 
         plt.savefig(f"{fig_file}_mcmc_traces.pdf", dpi=300, format='pdf')
         plt.show()
 
-        fig_size = max(3.0 * ndim, 10)
+        fig_size = 4*ndim
 
-        label_fontsize = max(16 - 0.7 * ndim, 9)
-        title_fontsize = max(14 - 0.7 * ndim, 8)
-        tick_fontsize = max(12 - 0.4 * ndim, 7)
+        label_fontsize = 18
+        title_fontsize = 18
+        tick_fontsize = 15
 
         fig = corner.corner(
             samples_pruned,
@@ -1182,7 +1197,7 @@ def mcmc_fitting(
         )
 
         margin = max(0.08 + 0.008 * ndim, 0.12)
-        fig.subplots_adjust(wspace=0.05, hspace=0.05, left=margin, bottom=margin, right=0.97, top=0.95)
+        fig.subplots_adjust(wspace=0.05, hspace=0.05, left=margin, bottom=margin, right=0.97, top=0.9)
 
         elements = [param_labels[k] for k in param_keys]
         axes = np.array(fig.axes).reshape((ndim, ndim))
@@ -1192,13 +1207,26 @@ def mcmc_fitting(
             name_i = param_keys[i]
             q16, q50, q84 = np.quantile(samples[:, i], [0.16, 0.5, 0.84])
             q_minus, q_plus = q50 - q16, q84 - q50
-            value_str = rf"${q50:.2f}_{{-{q_minus:.2f}}}^{{+{q_plus:.2f}}}$"
+            decimals = 2
+            while True:
+                q50_r     = round(q50,     decimals)
+                q_minus_r = round(q_minus, decimals)
+                q_plus_r  = round(q_plus,  decimals)
+                if q50_r != 0 and q_minus_r != 0 and q_plus_r != 0:
+                    break
+                decimals += 1
+                if decimals > 10: 
+                    break
+            value_str = rf"${q50:.{decimals}f}_{{-{q_minus:.{decimals}f}}}^{{+{q_plus:.{decimals}f}}}$"
             if name_i == "logN" or name_i.startswith("logN_"):
                 title = f"{_logN_units_note}\n{elements[i]}\n{value_str}"
-                ax.set_title(title, fontsize=title_fontsize, y=1.12)
+                ax.set_title(title, fontsize=title_fontsize, y=1)
+            elif name_i == "f_col" or name_i.startswith("f_col_"):
+                title = f"{_f_col_units_note}\n{elements[i]}\n{value_str}"
+                ax.set_title(title, fontsize=title_fontsize, y=1)
             else:
                 title = f"{elements[i]}\n{value_str}"
-                ax.set_title(title, fontsize=title_fontsize, y=1.05)
+                ax.set_title(title, fontsize=title_fontsize, y=1)
 
         for ax in fig.get_axes():
             ax.tick_params(axis='both', labelsize=tick_fontsize)

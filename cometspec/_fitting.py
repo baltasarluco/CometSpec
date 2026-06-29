@@ -69,7 +69,7 @@ def run_fit_mcmc(
         model.linelists = linelists
 
     if priors is None:
-        priors = model.priors or {"logN": (9.0, 15.0), "logQ": (-5.0, 0.0), "T": (10.0, 1000.0)}
+        priors = model.priors or {"logN": (9.0, 15.0), "f_col": (-5.0, 0.0), "T": (10.0, 1000.0)}
     model.priors = priors
 
     if lsf_method is None:
@@ -93,14 +93,14 @@ def run_fit_mcmc(
     # Canonical fallback bridge:
     # If priors do not sample a parameter, pass instance defaults to
     # modeling.mcmc_fitting so this wrapper remains the source of truth.
-    init_logQ = float(model.logQ) if model.logQ is not None else None
+    init_f_col = float(model.f_col) if model.f_col is not None else None
     init_T = float(model.T) if model.T is not None else 300.0
     init_T_by_iso = dict(model.T_by_iso) if model.T_by_iso is not None else None
     init_v_kms = float(model.v_kms) if model.v_kms is not None else 0.0
     init_v_kms_by_iso = dict(model.v_kms_by_iso) if model.v_kms_by_iso is not None else None
     init_dlam = float(model.dlam) if model.dlam is not None else 0.0
     init_dlam_by_iso = dict(model.dlam_by_iso) if model.dlam_by_iso is not None else None
-    init_logQ_by_iso = dict(model.logQ_by_iso) if model.logQ_by_iso is not None else None
+    init_f_col_by_iso = dict(model.f_col_by_iso) if model.f_col_by_iso is not None else None
     init_logN_by_iso = dict(model.logN_by_iso) if model.logN_by_iso is not None else None
     init_logN = float(model.logN) if model.logN is not None else 11.0
     init_sigma = float(model.sigma) if model.sigma is not None else None
@@ -140,8 +140,8 @@ def run_fit_mcmc(
         delta_lambda_A=pumping_dlam_A,
 
         # ✅ Fallbacks if not fit
-        init_logQ_by_iso=init_logQ_by_iso,
-        init_logQ=init_logQ,
+        init_f_col_by_iso=init_f_col_by_iso,
+        init_f_col=init_f_col,
         init_T=init_T,
         init_T_by_iso=init_T_by_iso,
         init_v_kms=init_v_kms,
@@ -197,10 +197,10 @@ def update_from_result(
     model.samples_pruned = result.get("samples_pruned")
     model.lnprob_pruned = result.get("lnprob_pruned")
 
-    model.q_seeing_corrected = False
+    model.logQ_seeing_corrected = False
     model.logN_seeing_corrected = False
 
-    for name in ("logN", "logQ", "T", "v_kms", "dlam"):
+    for name in ("logN", "f_col", "T", "v_kms", "dlam"):
         if name in model.median_params:
             setattr(model, name, float(model.median_params[name]))
             if name == "logN":
@@ -284,8 +284,8 @@ def update_from_result(
 
     logN_keys = {"logN"} | {f"logN_{iso}" for iso in iso_list}
     if any(k in model.median_params for k in logN_keys):
-        model.q = None
-        model.q_err = 0
+        model.logQ = None
+        model.logQ_err = 0
 
     # Match mcmc.py model_flux cache build: normalize systems, use the pumping
     # spectrum's wavelength range so default linelists contain the same lines
@@ -316,7 +316,7 @@ def update_from_result(
             line_path=model.line_path,
             model_wave=model.model_wave,
             logN=params_per_iso.get(f"logN_{i}", params_per_iso.get("logN", model.logN_by_iso.get(i, model.logN) if model.logN_by_iso else model.logN)),
-            logQ=params_per_iso.get(f"logQ_{i}", params_per_iso.get("logQ", model.logQ_by_iso.get(i, model.logQ) if model.logQ_by_iso else model.logQ)),
+            f_col=params_per_iso.get(f"f_col_{i}", params_per_iso.get("f_col", model.f_col_by_iso.get(i, model.f_col) if model.f_col_by_iso else model.f_col)),
             T=params_per_iso.get(f"T_{i}", params_per_iso.get("T", model.T_by_iso.get(i, model.T) if model.T_by_iso else model.T)),
             v_kms=params_per_iso.get(f"v_kms_{i}", params_per_iso.get("v_kms", model.v_kms_by_iso.get(i, model.v_kms) if model.v_kms_by_iso else model.v_kms)),
             dlam=params_per_iso.get(f"dlam_{i}", params_per_iso.get("dlam", model.dlam_by_iso.get(i, model.dlam) if model.dlam_by_iso else model.dlam)),

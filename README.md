@@ -9,7 +9,7 @@ A usage example is provided in `WorkFlow_Example/` as a Jupyter notebook called 
 
 For citation information, see the [Citation page in the documentation](https://cometspec.readthedocs.io/en/latest/citation.html).
 
-Data DOI: [10.5281/zenodo.19801570](https://doi.org/10.5281/zenodo.19801570)
+Data DOI: [10.5281/zenodo.19801569](https://zenodo.org/records/19801569)
 
 
 ---
@@ -46,3 +46,13 @@ If you are interested in collaborating, feel free to reach out at [baltasarluco@
 ## Contact
 
 For questions, suggestions, or bug reports, open an issue on [GitHub](https://github.com/baltasarluco/CometSpec/issues) or contact [baltasarluco@uc.cl](mailto:baltasarluco@uc.cl).
+
+## Version 0.1.1 what's new:
+
+- We add the possibility to include the $\rm X^2 \Sigma^+$ rovibrational transitions of CN.
+- We improve the mcmc plotting, which was previously hidding some labels for some corner cases.
+- We changed two parameter names: 
+    - `logQ` is now `f_col`. In order to avoid confusion between collisions and production rates.
+    - `q` is now `logQ` to clarify that the production rate is in log scale.
+    - In relation top both changes, any `_err`, `_iso` or other parameter directly related to the old`logQ` or `q` has been renamed accordingly.
+    

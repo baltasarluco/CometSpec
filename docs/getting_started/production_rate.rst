@@ -29,6 +29,13 @@ this approach, there is no need to fit.
 
 Let's prepare a fitted model from which we will compute production rates.
 
+.. note::
+
+   The collisional parameter ``f_col`` is defined as
+   :math:`f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1})`, where the
+   same downward rate :math:`C_{ul}` is assumed for every upper-to-lower pair
+   included in the collision scaffold.
+
 .. code-block:: python
     
     from cometspec.helper import open_kurucz_irradiance, open_hall_anderson_irradiance
@@ -45,7 +52,7 @@ Let's prepare a fitted model from which we will compute production rates.
         isotopologues="12C14N",
         systems=['BX', 'AX_dv1'],
         sigma=0.05,
-        logQ=-1,
+        f_col=-1,
         logN=14.0,
         T=200,
         v_kms=0,
@@ -115,7 +122,7 @@ Rectangular (slit) apertures are also supported:
    )
    print(f"log Q(CN, slit) = {logQ_slit:.2f} ± {logQ_slit_err:.2f}")
 
-The production rate and its error are stored in the attributes ``model.q`` and ``model.q_err`` after calling ``compute_production_rate``.
+The production rate and its error are stored in the attributes ``model.logQ`` and ``model.logQ_err`` after calling ``compute_production_rate``.
 
 ----
 
@@ -154,7 +161,7 @@ Multi-isotopologue production rates
 
 When multiple isotopologues are fitted,
 :meth:`~cometspec.fluorescence.FluorescenceModel.compute_production_rate` returns a
-``dict`` keyed by isotopologue name. You can also use the attribute ``model.q`` to access the production rates and errors for each isotopologue after calling ``compute_production_rate``.
+``dict`` keyed by isotopologue name. You can also use the attribute ``model.logQ`` to access the production rates and errors for each isotopologue after calling ``compute_production_rate``.
 
 .. code-block:: python
 
@@ -163,7 +170,7 @@ When multiple isotopologues are fitted,
         pumping=irradiance,
         isotopologues=["12C14N", "13C14N"], systems="BX",
         logN_by_iso={"12C14N": 14, "13C14N": 13.0},
-        T=100.0, sigma=0.02, logQ=-1, lsf_method="Gauss",
+        T=100.0, sigma=0.02, f_col=-1, lsf_method="Gauss",
         wave_col="WAVE", flux_col="FLUX", error_col="ERR", 
         continuum_col="CONTINUUM",
     )
@@ -218,8 +225,8 @@ column-density uncertainty to account for seeing-induced slit losses. Call it on
 .. code-block:: python
 
     print('Before adding slit-loss error:')
-    for iso in model.q:
-        print(f"log Q({iso}) = {model.q[iso]:.3f} ± {model.q_err[iso]:.3f}")
+    for iso in model.logQ:
+        print(f"log Q({iso}) = {model.logQ[iso]:.3f} ± {model.logQ_err[iso]:.3f}")
     for iso in model.logN_by_iso:
         print(f"log N({iso}) = {model.logN_by_iso[iso]:.2f} ± {model.logN_err_by_iso[iso][0]:.2f}") # for N you have up and low error, we just show 1
 
@@ -234,8 +241,8 @@ column-density uncertainty to account for seeing-induced slit losses. Call it on
     )
 
     print('After adding slit-loss error:')
-    for iso in model.q:
-        print(f"log Q({iso}) = {model.q[iso]:.3f} ± {model.q_err[iso]:.3f}")
+    for iso in model.logQ:
+        print(f"log Q({iso}) = {model.logQ[iso]:.3f} ± {model.logQ_err[iso]:.3f}")
     for iso in model.logN_by_iso:
         print(f"log N({iso}) = {model.logN_by_iso[iso]:.2f} ± {model.logN_err_by_iso[iso][0]:.2f}") # for N you have up and low error, we just show 1
 
@@ -243,7 +250,7 @@ column-density uncertainty to account for seeing-induced slit losses. Call it on
 If only one isotopologue is fitted, you have ``logN`` and ``logN_err``. We encourage you to read the documentation of :func:`~cometspec.fluorescence.FluorescenceModel.add_slit_loss_error`
 for more details on the method and its assumptions. Since this method adds the initial error in quadrature with the slit-loss error,
 the slit-loss error is not recalculated if ``add_slit_loss_error`` is called multiple times, in order to avoid accumulating it.
-If you want to recalculate it, you will need to either 1) fit again, or 2) reset the attributes ``q_seeing_corrected = False`` and ``logN_seeing_corrected = False``
+If you want to recalculate it, you will need to either 1) fit again, or 2) reset the attributes ``logQ_seeing_corrected = False`` and ``logN_seeing_corrected = False``
 and run the production rate calculation again (if the latter is not applied, the error will start accumulating repeatedly).
 
 .. _gs-pr-ref:

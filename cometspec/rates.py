@@ -414,7 +414,7 @@ def synth_spectrum_from_lines(
     df_lines : astropy.table.Table
         Transition table. **Required**
     N_col_cm2 : float
-        Column density in cm^-2. **Required**
+        Column density in molecules cm^-2. **Required**
     g_line_energy : numpy.ndarray, optional, default None
         Per-line energy g-factors. If not provided ``g_line_phot`` **must** be used to compute line intensities.
     g_line_phot : numpy.ndarray, optional, default None

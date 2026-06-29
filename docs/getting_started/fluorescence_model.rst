@@ -78,6 +78,17 @@ One-isotopologue model
 
 Build a model for :sup:`12`\ C\ :sup:`14`\ N.
 
+.. note::
+
+   The collisional parameter ``f_col`` used throughout these docs is defined as
+
+   .. math::
+
+      f_{\rm col} \equiv \log_{10}(C_{ul}\,/\,\mathrm{s}^{-1}),
+
+   where the same downward rate :math:`C_{ul}` is assumed for every
+   upper-to-lower pair included in the collision scaffold.
+
 .. plot::
    :context:
    :include-source:
@@ -91,7 +102,7 @@ Build a model for :sup:`12`\ C\ :sup:`14`\ N.
       window = (3865, 3885),
       logN=14.0,        # log10 column density [moelcules cm^-2]
       T=100.0,          # Kinetic temperature [K]
-      logQ=-1,           # log10 collision rate [s^-1]
+      f_col=-1,         # f_col = log10(C_ul / s^-1)
       sigma=0.05,        # Gaussian LSF sigma [Å]
       A_min=1e3,         # Minimum einstein A for lines to include
       lsf_method="Gauss",
@@ -133,15 +144,15 @@ Two-isotopologue model
 ----------------------
 
 You can include other isotopologues. The default ones are:
-``12C14N``, ``13C14N``, ``12C15N``, ``12C2``, ``13C2``, ``12C13C``, and ``Fe``.
+``12C14N``, ``13C14N``, ``12C15N``, ``12C2``, ``13C2``, ``12C13C``, and ``Fe``. Check :func:`~cometspec.linelist.load_default_transitions` for the full list of built-in line lists, their sources and their intrinsic cuts.
 
 You can mix them as you prefer, and even provide your own (as explained later).
 To use more than one isotopologue, pass a list of isotopologue names to
 the ``isotopologues`` parameter. All isotopologues share the same line spread function and ``A_min``
 cutoff. Each isotopologue's parameters can be set independently by passing a dict to the ``_by_iso`` parameters
-(``logN_by_iso``, ``T_by_iso``, ``logQ_by_iso``, ``v_kms_by_iso`` and ``dlam_by_iso``).
+(``logN_by_iso``, ``T_by_iso``, ``f_col_by_iso``, ``v_kms_by_iso`` and ``dlam_by_iso``).
 If an isotopologue name is missing from the ``_by_iso`` dict, it falls back to the shared value
-(``logN``, ``T``, ``logQ``, ``v_kms``, and ``dlam``). For example:
+(``logN``, ``T``, ``f_col``, ``v_kms``, and ``dlam``). For example:
 
 .. plot::
    :context:
@@ -155,7 +166,7 @@ If an isotopologue name is missing from the ``_by_iso`` dict, it falls back to t
        systems="BX",
        logN_by_iso={"12C14N": 13, "Fe": 12.5}, 
        T=300.0,
-       logQ=-1,
+       f_col=-1,
        sigma=0.03,
        lsf_method="Gauss",
        include_rotations=True,
@@ -236,7 +247,7 @@ the user isotopologue name must follow the pattern ``<number><Capital Letter>`` 
       lsf_method="Gauss",
       include_rotations=True, 
       A_min=1e4,
-      logQ=-1,
+      f_col=-1,
    )
 
    plt.figure(figsize=(10, 5))
@@ -311,7 +322,7 @@ Here is an example:
                sigma=0.5,
                A_min=1e3,
                logN_by_iso={'iso1': 12.0},
-               logQ= 4,
+               f_col= 4,
                T=300.0,
                include_rotations=True
             )
@@ -339,7 +350,7 @@ instance, or pass them as keyword arguments to ``update_model``. For example:
    model.sigma=0.01
    model.T = 300
    
-   model.update_model(logQ=-1)
+   model.update_model(f_col=-1)
 
 ----
 
@@ -355,7 +366,7 @@ After construction the model exposes several per-isotopologue diagnostics and pa
    model = FluorescenceModel(pumping=irradiance,
                   isotopologues=["12C14N", "13C14N"],
                   logN_by_iso={"12C14N": 14.0, "13C14N": 13.0},
-                  T=100.0, sigma=0.2, lsf_method="Gauss", logQ=-1)
+                  T=100.0, sigma=0.2, lsf_method="Gauss", f_col=-1)
 
    dic = model.n_lines()
    print("-"*20)
@@ -380,7 +391,7 @@ After construction the model exposes several per-isotopologue diagnostics and pa
    print('LogN by isotopologue:')
    for param, value in model.logN_by_iso.items():
       print(f'  {param}: {value}')
-   print('logQ:', model.logQ)
+   print('f_col:', model.f_col)
    print('T:', model.T)
    print('sigma:', model.sigma)
    print('lsf_method:', model.lsf_method)

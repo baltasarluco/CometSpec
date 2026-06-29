@@ -36,8 +36,8 @@ def save(model: "FluorescenceModel", filename: str) -> None:
         ratio=model.ratio,
         logN=model.logN,
         logN_by_iso=model.logN_by_iso,
-        logQ=model.logQ,
-        logQ_by_iso=model.logQ_by_iso,
+        f_col=model.f_col,
+        f_col_by_iso=model.f_col_by_iso,
         T=model.T,
         T_by_iso=model.T_by_iso,
         v_kms=model.v_kms,
@@ -72,9 +72,9 @@ def save(model: "FluorescenceModel", filename: str) -> None:
     )
 
     derived = dict(
-        q=model.q,
-        q_err=model.q_err,
-        q_seeing_corrected=model.q_seeing_corrected,
+        logQ=model.logQ,
+        logQ_err=model.logQ_err,
+        logQ_seeing_corrected=model.logQ_seeing_corrected,
         logN_seeing_corrected=model.logN_seeing_corrected,
         logN_err=model.logN_err,
         logN_err_by_iso=model.logN_err_by_iso,
@@ -123,9 +123,9 @@ def load(cls, filename: str) -> "FluorescenceModel":
             used_lsf_method=init_kwargs.get("lsf_method"),
         )
 
-    obj.q = derived.get("q", None)
-    obj.q_err = derived.get("q_err", None)
-    obj.q_seeing_corrected = derived.get("q_seeing_corrected", False)
+    obj.logQ = derived.get("logQ", None)
+    obj.logQ_err = derived.get("logQ_err", None)
+    obj.logQ_seeing_corrected = derived.get("logQ_seeing_corrected", False)
     obj.logN_seeing_corrected = derived.get("logN_seeing_corrected", False)
     if derived.get("logN_err") is not None:
         obj.logN_err = derived["logN_err"]
