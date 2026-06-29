@@ -473,7 +473,7 @@ def mcmc_fitting(
 
     config: Optional[MCMCFitConfig] = None,
 ) -> Dict[str, Any]:
-    """Run MCMC fitting for the fluorescence model in a wavelength window.
+    r"""Run MCMC fitting for the fluorescence model in a wavelength window.
 
     This routine builds the model for one or more isotopologues, applies an
     optional line-spread function (LSF), and samples posterior distributions for

@@ -347,7 +347,7 @@ def from_cn_brooke(
     use_omega_labels: bool = False,
     E_lower_col: str = "E''",
 ) -> pd.DataFrame:
-    """Convert a Brooke CN line list (e.g. the output :func:`~cometspec.helper.load_cn_linelist`) to the normalized schema.
+    r"""Convert a Brooke CN line list (e.g. the output :func:`~cometspec.helper.load_cn_linelist`) to the normalized schema.
 
     Parameters
     ----------
