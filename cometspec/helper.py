@@ -716,7 +716,7 @@ def get_kurucz_irradiance_path() -> Path:
 
 
 def open_kurucz_irradiance() -> pd.DataFrame:
-    """Load the packaged Kurucz [2]_ solar irradiance file. See `Kurucz <http://kurucz.harvard.edu/sun/irradiance2005/>`_.
+    r"""Load the packaged Kurucz [2]_ solar irradiance file. See `Kurucz <http://kurucz.harvard.edu/sun/irradiance2005/>`_.
 
     Returns
     -------
@@ -733,7 +733,7 @@ def open_kurucz_irradiance() -> pd.DataFrame:
         .. [2] Kurucz, R. L. 2005, Memorie della Societa Astronomica Italiana Supplementi, 8, 189. (`link <https://ui.adsabs.harvard.edu/abs/2005MSAIS...8..189K/abstract>`_)
     """
     path = get_kurucz_irradiance_path()
-    df = pd.read_csv(path, sep='\s+', names=['nm', 'flux'])
+    df = pd.read_csv(path, sep=r'\s+', names=['nm', 'flux'])
     wave = np.asarray(df['nm']*10, dtype=float)
     flux = np.asarray(df['flux'], dtype=float)
     flux = flux * u.W / (u.m**2 * u.nm)
@@ -769,7 +769,7 @@ def get_hall_anderson_irradiance_path() -> Path:
 
 
 def open_hall_anderson_irradiance(wave_max_AA: float = 2990.0) -> pd.DataFrame:
-    """Load the packaged Hall & Anderson [3]_ UV solar irradiance file.
+    r"""Load the packaged Hall & Anderson [3]_ UV solar irradiance file.
 
     The on-disk file has wavelength in Angstrom and irradiance in
     :math:`\mathrm{photons\,s^{-1}\,cm^{-2}\,\AA^{-1}}`. The output is converted to the same units
@@ -839,7 +839,7 @@ def get_meftah_irradiance_path() -> Path:
     return candidate
 
 def open_meftah_irradiance() -> pd.DataFrame:
-    """Load the packaged Meftah et al. (2023) solar irradiance file.
+    r"""Load the packaged Meftah et al. (2023) solar irradiance file.
 
     We used the disk integrated MPS-ATLAS-Kurucz spectrum which has units of
     :math:`\mathrm{nm}` and :math:`\mathrm{W.m^(-2).nm^(-1)}`, but it is converted to the same units

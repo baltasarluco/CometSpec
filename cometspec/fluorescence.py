@@ -1,4 +1,4 @@
-"""High-level fluorescence model and production-rate workflow.
+r"""High-level fluorescence model and production-rate workflow.
 
 This module exposes :class:`FluorescenceModel`, the user-facing wrapper that
 ties together line-list selection, physical parameters, the line-spread
@@ -45,7 +45,7 @@ __all__ = ["FluorescenceModel"]
 
 
 class FluorescenceModel:
-    """High-level fluorescence workflow wrapper.
+    r"""High-level fluorescence workflow wrapper.
 
     This class centralizes model state (line selection, physical parameters,
     LSF, and data columns) and is the preferred entry point for fitting and
@@ -206,7 +206,7 @@ class FluorescenceModel:
 
         config: Optional[FluorescenceModelConfig] = None,
     ) -> None:
-        """Initialize a fluorescence model instance and synthesize the first model.
+        r"""Initialize a fluorescence model instance and synthesize the first model.
 
         The constructor stores configuration/state and immediately calls
         :meth:`_synthesize_model` to populate model products.
@@ -840,7 +840,7 @@ class FluorescenceModel:
         omega: float = np.pi * (0.5 * np.pi / (180.0 * 3600.0)) ** 2,       
         N_Model: int = 20000,
     ) -> None:
-        """Update instance parameters and re-synthesize the model. 
+        r"""Update instance parameters and re-synthesize the model.
 
         Any non-``None`` argument is applied to the instance. LSF settings are
         rebuilt according to ``lsf``/``lsf_method`` and then

@@ -180,7 +180,7 @@ def is_atomic_species(iso_name: str | None) -> bool:
 
 
 def diatomic_symmetry_class(iso_name: str | None) -> str:
-    """Classify a diatomic isotopologue label for collision selection rules.
+    r"""Classify a diatomic isotopologue label for collision selection rules.
 
     Parameters
     ----------
@@ -235,7 +235,7 @@ def precompute_collision_scaffold(
     homonuclear: bool | None = None,
     dJ_allowed: Sequence[int] = (1,),
 ) -> dict:
-    """Build a rotational-collision scaffold from explicit lower-state columns.
+    r"""Build a rotational-collision scaffold from explicit lower-state columns.
 
     Parameters
     ----------
@@ -493,7 +493,7 @@ def precompute_collision_scaffold_fast(*args, **kwargs) -> dict:
     return sc
 
 def apply_collisions_inplace(M: np.ndarray, scaffold: Dict[str, np.ndarray], *, Q: float, T: float) -> np.ndarray:
-    """Apply rotational-collision rates to a matrix in place.
+    r"""Apply rotational-collision rates to a matrix in place.
 
     The downward rate :math:`Q \equiv C_{ul}` (in s\ :sup:`-1`) is assumed
     identical for every upper-to-lower pair listed in ``scaffold``. It
@@ -547,7 +547,7 @@ def apply_collisions_inplace_fast(
     T: float,
     Cup_work: np.ndarray,
 ) -> np.ndarray:
-    """Apply collisions in place using cached arrays and reusable buffers.
+    r"""Apply collisions in place using cached arrays and reusable buffers.
 
     Same semantics as :func:`apply_collisions_inplace`: the downward rate
     :math:`Q \equiv C_{ul}` (in s\ :sup:`-1`) is assumed identical for every
