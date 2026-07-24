@@ -29,18 +29,16 @@ docs/_autosummary/
 
 # Package output plots (regenerated on each run)
 WorkFlow_Example/mcmc_fit_*.pdf
-WorkFlow_Example/Example_plots/
 
-# Observation data — not distributed with the package
-WorkFlow_Example/Output_spectras/
+# Observation data — kept on Zenodo, not tracked in git
 WorkFlow_Example/Pumping_files/
-WorkFlow_Example/MCMC_results/
 WorkFlow_Example/Ephemeris/
 
 # Large / generated data files
 *.trans
 *.states
 *.pkl
+!WorkFlow_Example/MCMC_results/*.pkl
 WorkFlow_Example/13C2__8states.trans
 WorkFlow_Example/13C2__8states.states
 WorkFlow_Example/13C2.h5

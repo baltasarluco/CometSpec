@@ -11,6 +11,9 @@ For citation information, see the [Citation page in the documentation](https://c
 
 Data DOI: [10.5281/zenodo.19801569](https://zenodo.org/records/19801569)
 
+Repo DOI: [10.5281/zenodo.21534317](https://zenodo.org/records/21534317)
+
+Paper: [`Luco et al. 2026 (ADS)`](https://ui.adsabs.harvard.edu/abs/2026arXiv260715355L/abstract)
 
 ---
 
