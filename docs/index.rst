@@ -18,6 +18,9 @@
          <a href="https://www.python.org/">
             <img src="https://img.shields.io/badge/Python-≥3.9-blue?logo=python&logoColor=white" alt="Python ≥3.9">
          </a>
+         <a href="https://doi.org/10.5281/zenodo.21534317">
+            <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.21534317.svg" alt="DOI">
+         </a>
       </div>
       <img src="_static/comet-swirl-twin.svg" alt="comet animation" class="hero-comet"/>
    </div>
