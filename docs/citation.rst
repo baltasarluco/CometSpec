@@ -5,9 +5,12 @@ If you use CometSpec in your research, please cite the following paper:
 
 .. note::
 
-   Paper reference to be added upon publication.
+   `Luco et al. 2026 (ADS) <https://ui.adsabs.harvard.edu/abs/2026arXiv260715355L/abstract>`_
 
-You may also reference the code repository doi directly (added upon publication):
+You can also add as reference the code repository and data doi directly:
+
+- **Code repository:** `10.5281/zenodo.21534317 <https://doi.org/10.5281/zenodo.21534317>`_
+- **Data DOI:** `10.5281/zenodo.19801569 <https://zenodo.org/records/19801569>`_
 
 Roadmap
 -------
